@@ -3,237 +3,270 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Live Translate (EN -> VI)</title>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="dark">
+  <title>Live Translate (EN → VI)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
-  <!-- Header App Toolbar -->
-  <header class="app-header">
+  <a href="#liveTabContent" class="skip-link">Bỏ qua đến nội dung chính</a>
+
+  <!-- Header -->
+  <header class="app-header" role="banner">
     <div class="brand">
-      <div class="logo-dot"></div>
+      <div class="logo-wrap" aria-hidden="true">
+        <div class="logo-dot"></div>
+        <div class="logo-pulse"></div>
+      </div>
       <div class="title-area">
         <h1>Live Translate</h1>
-        <span class="subtitle">English ➜ Tiếng Việt</span>
+        <span class="subtitle"><span class="lang-pill">EN</span> <span class="arrow">→</span> <span class="lang-pill lang-vi">VI</span> • Realtime</span>
       </div>
     </div>
-    
-    <div class="controls">
-      <!-- Audio Source Selector -->
-      <select id="audioSourceSelect" class="btn-icon-wide" title="Chọn nguồn âm thanh">
-        <option value="tab">🌐 Âm thanh Tab</option>
-        <option value="mic">🎙️ Microphone</option>
-      </select>
-
-      <!-- Start/Stop Button -->
-      <button id="toggleBtn" class="btn btn-primary" title="Bắt đầu ghi âm">
-        <svg id="playIcon" viewBox="0 0 24 24">
-          <path d="M8 5v14l11-7z"/>
-        </svg>
-        <svg id="stopIcon" viewBox="0 0 24 24" style="display: none;">
-          <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-        </svg>
-        <span id="btnText">Bắt đầu</span>
-      </button>
-
-      <!-- Clear Button -->
-      <button id="clearBtn" class="btn btn-icon" title="Xóa nội dung">
-        <svg viewBox="0 0 24 24">
-          <path d="M15 4V3H9v1H4v2h16V4zM6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h2v10H8V9zm4 0h2v10h-2V9z"/>
-        </svg>
-      </button>
-
-      <!-- Settings Button (Gear) -->
-      <button id="settingsBtn" class="btn btn-icon" title="Cấu hình Gemini">
-        <svg viewBox="0 0 24 24">
-          <path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
-        </svg>
+    <div class="header-actions">
+      <span class="live-badge" id="liveBadge" aria-live="polite">Offline</span>
+      <button id="settingsBtn" class="btn btn-icon" title="Cấu hình Gemini (Ctrl+,)" aria-label="Mở cài đặt Gemini">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
       </button>
     </div>
   </header>
 
-  <!-- Navigation Tabs -->
-  <div class="tabs-nav">
-    <button id="tabLive" class="tab-btn active">🌐 Dịch trực tiếp</button>
-    <button id="tabSummary" class="tab-btn">📝 Tóm tắt & AI</button>
+  <!-- Control Bar -->
+  <div class="control-bar" role="toolbar" aria-label="Điều khiển ghi âm">
+    <label class="source-select-wrap" for="audioSourceSelect">
+      <span class="sr-only">Chọn nguồn âm thanh</span>
+      <svg viewBox="0 0 24 24" class="select-icon" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4zm0 12a3 3 0 0 1-3-3V7a3 3 0 0 1 6 0v5a3 3 0 0 1-3 3zm-7-3a7 7 0 0 0 14 0h-2a5 5 0 0 1-10 0H5zm7 7v3h-2v-3h2z"/></svg>
+      <select id="audioSourceSelect" class="source-select" title="Chọn nguồn âm thanh">
+        <option value="tab">🌐 Tab Audio</option>
+        <option value="mic">🎙️ Microphone</option>
+      </select>
+    </label>
+
+    <button id="toggleBtn" class="btn btn-primary btn-record" title="Bắt đầu ghi âm (Space)" aria-label="Bắt đầu ghi âm">
+      <span class="btn-icon-wrap">
+        <svg id="playIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="stopIcon" viewBox="0 0 24 24" style="display:none" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </span>
+      <span id="btnText">Bắt đầu</span>
+      <span class="kbd-hint" aria-hidden="true">SPACE</span>
+    </button>
+
+    <button id="clearBtn" class="btn btn-ghost" title="Xóa nội dung (Ctrl+K)" aria-label="Xóa toàn bộ nội dung">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4V3H9v1H4v2h16V4zM6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h2v10H8V9zm4 0h2v10h-2V9z"/></svg>
+      <span class="btn-label-sm">Xóa</span>
+    </button>
   </div>
 
-  <!-- Tab 1: Live Translate Content -->
-  <main class="split-layout tab-content active-tab-content" id="liveTabContent">
-    <!-- Top Area: English -->
-    <section class="panel-section" id="englishSection">
+  <!-- Tabs -->
+  <nav class="tabs-nav" role="tablist" aria-label="Chế độ xem">
+    <button id="tabLive" class="tab-btn active" role="tab" aria-selected="true" aria-controls="liveTabContent">
+      <span class="tab-icon">🌐</span>
+      <span>Dịch trực tiếp</span>
+      <span class="tab-indicator"></span>
+    </button>
+    <button id="tabSummary" class="tab-btn" role="tab" aria-selected="false" aria-controls="summaryTabContent">
+      <span class="tab-icon">📝</span>
+      <span>Tóm tắt AI</span>
+      <span class="tab-indicator"></span>
+    </button>
+  </nav>
+
+  <!-- Tab 1: Live - Single block: EN on top, VI right below -->
+  <main class="split-layout tab-content active-tab-content" id="liveTabContent" role="tabpanel" aria-labelledby="tabLive">
+    <section class="panel-section single-block" id="transcriptSection" aria-labelledby="transcript-title">
       <div class="panel-header">
         <div class="panel-title">
-          <span class="flag-icon">🇬🇧</span>
-          <h2>English (Original)</h2>
+          <span class="flag-icon" aria-hidden="true">🌐</span>
+          <h2 id="transcript-title">Transcript</h2>
+          <span class="panel-subtitle">EN <span aria-hidden="true">→</span> VI</span>
+          <span class="word-count" id="combinedWordCount" aria-live="polite">0 từ</span>
+          <span class="word-count" id="enWordCount" style="display:none">0 từ</span>
+          <span class="word-count" id="viWordCount" style="display:none">0 từ</span>
         </div>
         <div class="panel-actions">
-          <button id="copyEnBtn" class="btn-action-icon" title="Sao chép tiếng Anh">
-            <svg viewBox="0 0 24 24">
-              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-            </svg>
+          <label class="suggest-toggle-wrap" title="Bật/tắt gợi ý trả lời AI">
+            <input type="checkbox" id="suggestToggle" checked>
+            <span class="suggest-toggle-label">💡 AI</span>
+          </label>
+          <span class="auto-badge" title="Dịch tự động bằng Google Translate">Auto</span>
+          <button id="copyEnBtn" class="copy-pill-btn copy-pill-en" title="Sao chép tiếng Anh" aria-label="Sao chép tiếng Anh">
+            <span class="pill-label">EN</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+          </button>
+          <button id="copyViBtn" class="copy-pill-btn copy-pill-vi" title="Sao chép tiếng Việt" aria-label="Sao chép tiếng Việt">
+            <span class="pill-label">VI</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+          </button>
+          <button id="copyAllBtn" class="copy-pill-btn copy-pill-all" title="Sao chép tất cả (EN+VI)" aria-label="Sao chép tất cả">
+            <span class="pill-label">All</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 2H9c-1.1 0-2 .9-2 2v4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H9V4h8v10zm4 4h-4v-4h4v4z"/></svg>
           </button>
         </div>
       </div>
-      <div class="panel-content scrollable" id="englishContent">
-        <div class="placeholder-text" id="enPlaceholder">Nhấp "Bắt đầu" và nói tiếng Anh để ghi âm...</div>
-        <div class="transcript-log" id="englishLog"></div>
-        <div class="interim-text" id="englishInterim"></div>
-      </div>
-    </section>
-
-    <!-- Glowing Divider -->
-    <div class="glow-divider"></div>
-
-    <!-- Bottom Area: Vietnamese -->
-    <section class="panel-section" id="vietnameseSection">
-      <div class="panel-header">
-        <div class="panel-title">
-          <span class="flag-icon">🇻🇳</span>
-          <h2>Tiếng Việt (Bản dịch)</h2>
+      <div class="panel-content scrollable" id="transcriptContent" tabindex="0" aria-label="Nội dung transcript tiếng Anh và bản dịch tiếng Việt">
+        <div class="placeholder-text" id="combinedPlaceholder">
+          <div class="placeholder-illust">🎤</div>
+          <p class="placeholder-title">Sẵn sàng ghi âm</p>
+          <p class="placeholder-desc">Nhấp <strong>Bắt đầu</strong> và nói tiếng Anh. Mỗi câu tiếng Anh sẽ hiện ngay phía trên bản dịch tiếng Việt.</p>
+          <div class="placeholder-hints">
+            <span class="hint-chip">🌐 Tab Audio</span>
+            <span class="hint-chip">🎙️ Micro</span>
+          </div>
         </div>
-        <div class="panel-actions">
-          <button id="copyViBtn" class="btn-action-icon" title="Sao chép bản dịch">
-            <svg viewBox="0 0 24 24">
-              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-            </svg>
-          </button>
+        <!-- Hidden legacy placeholders/logs for JS compatibility (kept but not visible) -->
+        <div id="enPlaceholder" style="display:none"></div>
+        <div id="viPlaceholder" style="display:none"></div>
+        <div id="englishLog" style="display:none" aria-hidden="true"></div>
+        <div id="vietnameseLog" style="display:none" aria-hidden="true"></div>
+
+        <div class="transcript-feed" id="transcriptFeed" aria-live="polite"></div>
+
+        <div class="interim-block" id="interimBlock" style="display:none" aria-live="polite">
+          <div class="interim-text interim-en" id="englishInterim"></div>
+          <div class="interim-text interim-vi" id="vietnameseInterim"></div>
         </div>
-      </div>
-      <div class="panel-content scrollable" id="vietnameseContent">
-        <div class="placeholder-text" id="viPlaceholder">Bản dịch tiếng Việt sẽ hiển thị ở đây...</div>
-        <div class="transcript-log" id="vietnameseLog"></div>
-        <div class="interim-text" id="vietnameseInterim"></div>
+
+        <!-- Legacy single interim containers kept for JS but mapped to above -->
+        <div id="englishContent" style="display:none"></div>
+        <div id="vietnameseContent" style="display:none"></div>
       </div>
     </section>
   </main>
 
-  <!-- Tab 2: Meeting Summary Content -->
-  <main class="summary-layout tab-content" id="summaryTabContent" style="display: none;">
-    <!-- API Key Warning/Prompt -->
-    <div class="api-warning-card" id="apiWarningCard" style="display: none;">
-      <div class="warning-icon">⚠️</div>
+  <!-- Tab 2: Summary -->
+  <main class="summary-layout tab-content" id="summaryTabContent" role="tabpanel" aria-labelledby="tabSummary" style="display:none">
+    <div class="api-warning-card" id="apiWarningCard" style="display:none" role="alert">
+      <div class="warning-icon" aria-hidden="true">⚠️</div>
       <div class="warning-text">
-        <h3>Chưa cấu hình Gemini API Key</h3>
-        <p>Vui lòng cấu hình API Key của bạn để sử dụng tính năng tóm tắt thông minh bằng AI.</p>
+        <h3>Chưa cấu hình AI Provider</h3>
+        <p>Thêm Base URL, Model và API Key để dùng tóm tắt AI.</p>
       </div>
       <button id="configNowBtn" class="btn btn-primary btn-sm">Cấu hình ngay</button>
     </div>
 
-    <!-- Summary Configuration Panel -->
     <div class="summary-config-panel">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="summaryLang">Ngôn ngữ tóm tắt</label>
-          <select id="summaryLang" class="form-select">
-            <option value="vi">🇻🇳 Tiếng Việt</option>
-            <option value="en">🇬🇧 Tiếng Anh</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="summaryDetail">Kiểu tóm tắt</label>
-          <select id="summaryDetail" class="form-select">
-            <option value="bullets">📝 Gạch đầu dòng (Chi tiết)</option>
-            <option value="short">⚡ Ngắn gọn (Ý chính)</option>
-            <option value="action">🎯 Hành động cần làm (Actions)</option>
-          </select>
-        </div>
+      <div class="form-row summary-compact-row">
+        <select id="summaryLang" class="form-select" aria-label="Ngôn ngữ tóm tắt">
+          <option value="vi">🇻🇳 VI</option>
+          <option value="en">🇬🇧 EN</option>
+        </select>
+        <select id="summaryDetail" class="form-select" aria-label="Kiểu tóm tắt">
+          <option value="bullets">📝 Chi tiết</option>
+          <option value="short">⚡ Ngắn</option>
+          <option value="action">🎯 Actions</option>
+        </select>
+        <button id="generateSummaryBtn" class="btn btn-primary btn-sm btn-generate" aria-label="Tạo tóm tắt bằng AI">
+          <svg viewBox="0 0 24 24" class="sparkle-icon" aria-hidden="true"><path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6C8.74 12.16 8 10.64 8 9c0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.64-.74 3.16-2.15 4.1z"/></svg>
+          <span>Tóm tắt</span>
+        </button>
       </div>
-      
-      <button id="generateSummaryBtn" class="btn btn-primary btn-block btn-lg">
-        <svg viewBox="0 0 24 24" class="sparkle-icon" style="width: 16px; height: 16px; fill: currentColor; margin-right: 6px; display: inline-block; vertical-align: middle;">
-          <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6C8.74 12.16 8 10.64 8 9c0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.64-.74 3.16-2.15 4.1z"/>
-        </svg>
-        <span>Tạo tóm tắt bằng Gemini</span>
-      </button>
     </div>
 
-    <!-- Summary Output Section -->
-    <section class="panel-section summary-output-section">
+    <section class="panel-section summary-output-section" aria-labelledby="summary-title">
       <div class="panel-header">
         <div class="panel-title">
-          <svg viewBox="0 0 24 24" class="doc-icon" style="width: 16px; height: 16px; fill: var(--text-sub); margin-right: 6px;">
-            <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
-          </svg>
-          <h2>Kết quả tóm tắt cuộc họp</h2>
+          <svg viewBox="0 0 24 24" class="doc-icon" aria-hidden="true"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+          <h2 id="summary-title">Kết quả tóm tắt</h2>
         </div>
         <div class="panel-actions">
-          <button id="copySummaryBtn" class="btn-action-icon" title="Sao chép tóm tắt" style="display: none;">
-            <svg viewBox="0 0 24 24">
-              <path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-            </svg>
+          <button id="copySummaryBtn" class="btn-action-icon" title="Sao chép tóm tắt" aria-label="Sao chép tóm tắt" style="display:none">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
           </button>
         </div>
       </div>
       <div class="panel-content scrollable" id="summaryContent">
         <div class="placeholder-text" id="summaryPlaceholder">
-          Nhấp "Tạo tóm tắt bằng Gemini" sau khi có dữ liệu dịch thoại để nhận kết quả tóm tắt cuộc họp.
+          <div class="placeholder-illust">✨</div>
+          <p class="placeholder-title">Chưa có tóm tắt</p>
+          <p class="placeholder-desc">Sau khi có transcript, bấm “Tạo tóm tắt” để Gemini phân tích.</p>
         </div>
-        <div class="markdown-body" id="summaryMarkdown" style="display: none;"></div>
-        <div class="loading-container" id="summaryLoading" style="display: none;">
-          <div class="spinner"></div>
-          <p>Gemini đang phân tích và tóm tắt...</p>
+        <div class="markdown-body" id="summaryMarkdown" style="display:none"></div>
+        <div class="loading-container" id="summaryLoading" style="display:none" role="status" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
+          <p>Gemini đang phân tích…</p>
+          <span class="loading-sub">Có thể mất 5–10 giây</span>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- Footer Toolbar -->
-  <footer class="app-footer">
-    <div class="footer-status" id="statusText">Sẵn sàng</div>
-    <div class="footer-options">
-      <label class="toggle-switch">
-        <input type="checkbox" id="autoScrollCheck" checked>
-        <span class="slider"></span>
-        <span class="toggle-label">Tự động cuộn</span>
-      </label>
+  <!-- Footer -->
+  <footer class="app-footer" role="contentinfo">
+    <div class="footer-status" id="statusText" aria-live="polite" aria-atomic="true">
+      <span class="status-dot"></span>
+      <span>Sẵn sàng</span>
     </div>
+    <label class="toggle-switch" title="Tự động cuộn xuống khi có nội dung mới">
+      <input type="checkbox" id="autoScrollCheck" checked>
+      <span class="slider" aria-hidden="true"></span>
+      <span class="toggle-label">Tự động cuộn</span>
+    </label>
   </footer>
 
-  <!-- Permission Overlay (Hidden by default) -->
-  <div class="overlay" id="permissionOverlay" style="display: none;">
+  <!-- Toast -->
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Permission Overlay -->
+  <div class="overlay" id="permissionOverlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="perm-title">
     <div class="overlay-card">
-      <div class="overlay-icon">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-          <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-        </svg>
+      <div class="overlay-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
       </div>
-      <h3>Yêu cầu quyền Microphone</h3>
-      <p>Cần được cấp quyền truy cập microphone để hoạt động. Vui lòng bấm vào nút bên dưới để cấp quyền.</p>
-      <button class="btn btn-primary btn-block" id="grantPermissionBtn">Cấp quyền Micro</button>
+      <h3 id="perm-title">Cần quyền Microphone</h3>
+      <p>Cho phép truy cập micro để nhận diện giọng nói. Bạn có thể đổi lại trong cài đặt Chrome.</p>
+      <button class="btn btn-primary btn-block" id="grantPermissionBtn">Mở trang cấp quyền</button>
+      <button class="btn btn-ghost btn-block" onclick="document.getElementById('permissionOverlay').style.display='none'">Để sau</button>
     </div>
   </div>
 
-  <!-- Settings Overlay (Hidden by default) -->
-  <div class="overlay" id="settingsOverlay" style="display: none;">
+  <!-- Settings Overlay - Custom Provider -->
+  <div class="overlay" id="settingsOverlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="overlay-card settings-card">
       <div class="settings-header">
-        <h3>Cấu hình Gemini API</h3>
-        <button id="closeSettingsBtn" class="btn-close" title="Đóng">&times;</button>
+        <h3 id="settings-title">Cấu hình AI Provider</h3>
+        <button id="closeSettingsBtn" class="btn-close" title="Đóng (Esc)" aria-label="Đóng">×</button>
       </div>
       <div class="settings-body">
         <div class="form-group-vertical">
-          <label for="apiKeyInput">Gemini API Key</label>
-          <div class="input-with-toggle">
-            <input type="password" id="apiKeyInput" placeholder="Nhập API Key của bạn..." class="form-input">
-            <button id="toggleApiKeyVisibilityBtn" class="btn-toggle-visibility" title="Hiển thị/Ẩn API Key">👁️</button>
+          <label for="baseUrlInput">Base URL <span class="req">*</span></label>
+          <input type="text" id="baseUrlInput" placeholder="https://api.openai.com/v1" class="form-input" autocomplete="off" spellcheck="false">
+          <span class="help-text">Ví dụ: <code>https://api.openai.com/v1</code> • <code>https://generativelanguage.googleapis.com/v1beta</code> • <code>http://localhost:11434/v1</code></span>
+          <div class="preset-chips" aria-label="Preset nhanh">
+            <button type="button" class="preset-chip" data-preset="openai">OpenAI</button>
+            <button type="button" class="preset-chip" data-preset="gemini">Gemini</button>
+            <button type="button" class="preset-chip" data-preset="ollama">Ollama</button>
+            <button type="button" class="preset-chip" data-preset="groq">Groq</button>
           </div>
-          <span class="help-text">
-            Lấy API Key miễn phí tại 
-            <a href="https://aistudio.google.com/" target="_blank" class="text-link">Google AI Studio ↗</a>
-          </span>
         </div>
         <div class="form-group-vertical">
-          <label for="geminiModelSelect">Gemini Model</label>
-          <select id="geminiModelSelect" class="form-select">
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Khuyên dùng)</option>
-            <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-          </select>
+          <label for="apiKeyInput">API Key <span class="req">*</span></label>
+          <div class="input-with-toggle">
+            <input type="password" id="apiKeyInput" placeholder="sk-... / AIza... / ollama (để trống nếu local)" class="form-input" autocomplete="off" spellcheck="false">
+            <button id="toggleApiKeyVisibilityBtn" class="btn-toggle-visibility" type="button" title="Hiện/ẩn" aria-label="Hiện hoặc ẩn API Key">👁️</button>
+          </div>
+          <span class="help-text">Với Ollama local có thể để trống.</span>
         </div>
+        <div class="form-group-vertical">
+          <label for="modelInput">Model <span class="req">*</span></label>
+          <input type="text" id="modelInput" list="modelList" placeholder="gpt-4o-mini / gemini-2.5-flash / llama3.1" class="form-input" autocomplete="off" spellcheck="false">
+          <datalist id="modelList">
+            <option value="gpt-4o-mini"></option>
+            <option value="gpt-4o"></option>
+            <option value="gemini-2.5-flash"></option>
+            <option value="gemini-1.5-flash"></option>
+            <option value="llama3.1"></option>
+            <option value="qwen2.5"></option>
+          </datalist>
+          <span class="help-text">Nhập chính xác tên model của provider.</span>
+        </div>
+        <!-- Legacy hidden select for compat -->
+        <select id="geminiModelSelect" style="display:none"><option value="gemini-2.5-flash"></option></select>
       </div>
       <div class="settings-footer">
         <button id="saveSettingsBtn" class="btn btn-primary btn-block">Lưu cấu hình</button>
+        <p class="help-text center" style="margin-top:8px">Hỗ trợ OpenAI-compatible API. Với Gemini dùng format <code>generativelanguage</code>.</p>
       </div>
     </div>
   </div>
