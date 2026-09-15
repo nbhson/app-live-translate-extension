@@ -258,10 +258,43 @@ body {
 
 /* New: Single transcript feed - EN on top (white, left-border), VI below (yellow, left-border) */
 .transcript-feed { display: flex; flex-direction: column; gap: 12px; }
+/* Smooth scroll on the container to avoid jumping */
+#transcriptContent { scroll-behavior: smooth; }
+
+/* Entry animation: slide in + fade with subtle scale */
+@keyframes utteranceIn {
+  0% { opacity: 0; transform: translateY(-10px) scale(0.98); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+@keyframes utteranceSettle {
+  0% { opacity: 0.85; }
+  100% { opacity: 1; }
+}
+@keyframes borderBottomGrow {
+  0% { width: 0; }
+  100% { width: 100%; }
+}
+@keyframes textReveal {
+  0% { opacity: 0; transform: translateX(-4px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+@keyframes borderAccentPulse {
+  0% { box-shadow: 0 0 0 0 rgba(251,191,36,0); }
+  30% { box-shadow: 0 0 0 3px rgba(251,191,36,0.20); }
+  100% { box-shadow: 0 0 0 0 rgba(251,191,36,0); }
+}
+/* Subtle separator between utterances: expanding line */
+@keyframes separatorGrow {
+  0% { width: 0; opacity: 0; }
+  100% { width: 100%; opacity: 1; }
+}
+
 .utterance {
   background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
-  animation: fadeUp 0.35s var(--ease) forwards; transition: border-color 0.2s, background 0.2s;
+  animation: utteranceIn 0.38s var(--ease) forwards;
+  transition: border-color 0.25s, background 0.25s, box-shadow 0.25s;
   position: relative;
+  will-change: transform, opacity;
 }
 .utterance:hover { background: rgba(255,255,255,0.035); border-color: var(--border-strong); }
 .utterance-body { display: flex; flex-direction: column; min-height: 56px; }
@@ -275,6 +308,8 @@ body {
 .utterance-col-en .utterance-en-text {
   color: #ffffff; font-size: 14.5px; font-weight: 500; line-height: 1.6;
 }
+/* EN text reveal animation: staggered fade-in */
+.utterance-col-en .utterance-en-text { animation: textReveal 0.3s 0.1s var(--ease) forwards; }
 
 /* VI column: yellow text, left border accent */
 .utterance-col-vi {
@@ -289,7 +324,11 @@ body {
 }
 .utterance-col-vi .vi-loading {
   color: var(--text-3); font-size: 13px; font-style: italic;
+  animation: textReveal 0.25s var(--ease) forwards;
 }
+/* Flash when VI text arrives: border accent pulse */
+.utterance-col-vi.vi-just-arrived { animation: borderAccentPulse 0.8s var(--ease); }
+.utterance-col-vi.vi-just-arrived .utterance-vi-text { animation: textReveal 0.35s var(--ease) forwards; }
 
 /* Language label strip */
 .utterance-lang {
@@ -307,7 +346,7 @@ body {
 /* Per-utterance copy buttons: horizontal row */
 .utterance-copy-row {
   display: flex; gap: 4px; justify-content: flex-end; padding: 5px 10px; border-top: 1px solid var(--border);
-  opacity: 0; transition: opacity 0.2s;
+  opacity: 0; transition: opacity 0.25s var(--ease);
 }
 .utterance:hover .utterance-copy-row { opacity: 1; }
 .copy-mini-btn {

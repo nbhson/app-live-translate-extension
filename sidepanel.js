@@ -668,6 +668,11 @@ async function finalizeText(text) {
       setViText(cache.viText, finalizedViPhrases[idx]);
       cache.copyVi.dataset.text = finalizedViPhrases[idx];
       cache.copyVi.disabled = false;
+      // Flash the VI column to show it just arrived
+      if (cache.colVi) {
+        cache.colVi.classList.add('vi-just-arrived');
+        setTimeout(() => cache.colVi.classList.remove('vi-just-arrived'), 800);
+      }
     }
     updateWordCounts();
   }
@@ -957,6 +962,26 @@ function setViText(el, vi) {
   } else {
     el.textContent = vi;
   }
+}
+
+// Smooth auto-scroll: throttle to avoid layout thrash
+let scrollScheduled = false;
+function autoScroll() {
+  if (scrollScheduled) return;
+  scrollScheduled = true;
+  requestAnimationFrame(() => {
+    scrollScheduled = false;
+    const autoScrollCheck = document.getElementById('autoScrollCheck');
+    if (autoScrollCheck && autoScrollCheck.checked && transcriptContent) {
+      const nearBottom = (transcriptContent.scrollHeight - transcriptContent.scrollTop - transcriptContent.clientHeight) < 60;
+      if (nearBottom || true) {
+        transcriptContent.scrollTo({
+          top: transcriptContent.scrollHeight,
+          behavior: 'smooth'
+        });
+      }
+    }
+  });
 }
 
 function escapeHtml(str) {
@@ -1516,19 +1541,6 @@ function setupKeyboardShortcuts() {
         }
       });
     });
-  }
-}
-
-// Auto Scroll to bottom (single block)
-function autoScroll() {
-  const autoScrollCheck = document.getElementById('autoScrollCheck');
-  if (autoScrollCheck && autoScrollCheck.checked) {
-    if (transcriptContent) transcriptContent.scrollTop = transcriptContent.scrollHeight;
-    // legacy fallback
-    const enContent = document.getElementById('englishContent');
-    const viContent = document.getElementById('vietnameseContent');
-    if (enContent) enContent.scrollTop = enContent.scrollHeight;
-    if (viContent) viContent.scrollTop = viContent.scrollHeight;
   }
 }
 
