@@ -133,6 +133,27 @@
         <div id="vietnameseContent" style="display:none"></div>
       </div>
     </section>
+
+    <!-- Suggestion Dock – separated like mockup [Image 1] -->
+    <section class="suggestion-dock" id="suggestionDock" aria-label="Gợi ý trả lời">
+      <div class="dock-header">
+        <div class="dock-title">
+          <span class="q-icon">?</span>
+          <span>Gợi ý trả lời</span>
+          <span class="q-count" id="qCountBadge">0 câu hỏi</span>
+        </div>
+        <div class="dock-tabs" role="tablist" aria-label="Chế độ gợi ý">
+          <button class="dock-tab active" data-view="both" role="tab" aria-selected="true">Cả 2</button>
+          <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Cấu trúc</button>
+          <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Câu hoàn chỉnh</button>
+          <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Xóa gợi ý">Xóa</button>
+        </div>
+      </div>
+      <div class="question-pills" id="questionPills" role="tablist" aria-label="Danh sách câu hỏi"></div>
+      <div class="suggestion-body scrollable" id="suggestionBody">
+        <div class="suggest-empty" id="suggestEmpty">Chưa có câu hỏi nào. Khi AI phát hiện câu hỏi, gợi ý sẽ hiện ở đây.</div>
+      </div>
+    </section>
   </main>
 
   <!-- Tab 2: Summary -->

@@ -11,11 +11,13 @@ const MAX_INTERIM_LENGTH = 100; // 100 characters to force-finalize
 
 let finalizedEnPhrases = [];
 let finalizedViPhrases = [];
-let questionSuggestions = {}; // index -> { state: 'loading'|'done'|'error', answers: string[], error: string }
+let questionSuggestions = {}; // index -> { state, question, answers, structures, error }
 let suggestEnabled = true; // toggle via provider config
 let utteranceDomCache = []; // index -> { root, enEl, viEl, viTextEl, enTextEl, copyEn, copyVi, suggestCard }
 let pendingRenderQueue = new Set();
 let renderScheduled = false;
+let selectedQuestionIdx = null;
+let suggestView = 'both'; // both | structure | complete
 
 // Provider config state (custom: baseUrl + apiKey + model)
 let providerConfig = {
@@ -52,6 +54,12 @@ const combinedWordCount = document.getElementById('combinedWordCount');
 const interimBlock = document.getElementById('interimBlock');
 const copyAllBtn = document.getElementById('copyAllBtn');
 const suggestToggle = document.getElementById('suggestToggle');
+const suggestionDock = document.getElementById('suggestionDock');
+const qCountBadge = document.getElementById('qCountBadge');
+const questionPills = document.getElementById('questionPills');
+const suggestionBody = document.getElementById('suggestionBody');
+const suggestEmpty = document.getElementById('suggestEmpty');
+const clearSuggestionsBtn = document.getElementById('clearSuggestionsBtn');
 
 const copyEnBtn = document.getElementById('copyEnBtn');
 const copyViBtn = document.getElementById('copyViBtn');
@@ -99,10 +107,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupSummaryFeatures();
   setupKeyboardShortcuts();
   setupSuggestToggle();
+  setupSuggestionDock();
   await loadProviderConfig();
   await loadSuggestPref();
   await checkAndHidePermissionOverlay();
   updateWordCounts();
+  updateDock();
 });
 
 async function loadSuggestPref() {
@@ -489,7 +499,11 @@ Context (last utterances): """${ctx}"""
 
 Question: """${question}"""
 
-Task: Suggest 3 to 5 concise answers in English (each 1 sentence, diverse angles: agree / propose / clarify / neutral). Output ONLY a JSON array of strings, e.g. ["Answer 1","Answer 2"]. No markdown, no extra text.`;
+Task: Return JSON with two fields:
+- "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
+- "answers": 3 full natural answers in English (1 sentence each, diverse angles: friendly / concise / playful etc, each may contain placeholder [City, Country] if location question).
+
+Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1","Answer 2","Answer 3"]}. No markdown, no extra text.`;
 }
 
 async function callProviderForSuggest(prompt) {
@@ -521,7 +535,7 @@ async function callProviderForSuggest(prompt) {
       body: JSON.stringify({
         model,
         messages: [
-          { role: 'system', content: 'You output ONLY JSON array of English answer strings. No markdown.' },
+          { role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },
           { role: 'user', content: prompt }
         ],
         temperature: 0.85,
@@ -541,42 +555,179 @@ async function callProviderForSuggest(prompt) {
 }
 
 function parseSuggestAnswers(raw) {
-  if (!raw) return [];
-  // try JSON array directly
+  if (!raw) return { structures: [], answers: [] };
+  // try JSON object {structures, answers}
   try {
-    // extract array substring
+    const objMatch = raw.match(/\{[\s\S]*\}/);
+    if (objMatch) {
+      const obj = JSON.parse(objMatch[0]);
+      if (obj && (obj.answers || obj.structures)) {
+        const structures = Array.isArray(obj.structures) ? obj.structures.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
+        const answers = Array.isArray(obj.answers) ? obj.answers.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
+        if (answers.length || structures.length) return { structures, answers };
+      }
+      // fallback if object is array
+      if (Array.isArray(obj)) return { structures: [], answers: obj.slice(0,5).map(s=>String(s).trim()).filter(Boolean) };
+    }
+  } catch {}
+  try {
     const m = raw.match(/\[[\s\S]*\]/);
     if (m) {
       const arr = JSON.parse(m[0]);
-      if (Array.isArray(arr)) return arr.slice(0,5).map(s => String(s).trim()).filter(Boolean);
+      if (Array.isArray(arr)) return { structures: [], answers: arr.slice(0,5).map(s => String(s).trim()).filter(Boolean) };
     }
   } catch {}
-  // fallback: split lines
-  return raw.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').trim()).filter(Boolean).slice(0,5);
+  const lines = raw.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').trim()).filter(Boolean).slice(0,5);
+  return { structures: [], answers: lines };
+}
+
+function synthesizeStructures(answers) {
+  // fallback: generate short hint from answer prefix
+  return answers.map(a => {
+    const words = a.split(/\s+/).slice(0,6).join(' ');
+    return words.length > 40 ? words.slice(0,40)+'…' : words;
+  });
 }
 
 async function triggerSuggestForIndex(idx, question) {
   if (!suggestEnabled) return;
   const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
   if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
-    questionSuggestions[idx] = { state: 'error', answers: [], error: 'Chưa cấu hình AI Provider' };
+    questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: 'Chưa cấu hình AI Provider' };
     updateSuggestCard(idx);
+    updateDock();
     return;
   }
-  questionSuggestions[idx] = { state: 'loading', answers: [] };
+  questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
+  // auto-select this question
+  selectedQuestionIdx = idx;
   updateSuggestCard(idx);
+  updateDock();
   try {
-    const context = finalizedEnPhrases.slice(0, idx).concat(question);
     const prompt = buildSuggestPrompt(question, finalizedEnPhrases.slice(Math.max(0, idx-3), idx+1));
     const raw = await callProviderForSuggest(prompt);
-    const answers = parseSuggestAnswers(raw);
-    if (answers.length === 0) throw new Error('Không parse được gợi ý');
-    questionSuggestions[idx] = { state: 'done', answers };
+    const parsed = parseSuggestAnswers(raw);
+    let { structures, answers } = parsed;
+    if (answers.length === 0 && structures.length === 0) throw new Error('Không parse được gợi ý');
+    if (answers.length === 0) answers = structures;
+    if (structures.length === 0) structures = synthesizeStructures(answers);
+    // ensure limits
+    answers = answers.slice(0,3);
+    structures = structures.slice(0,3);
+    questionSuggestions[idx] = { state: 'done', question, answers, structures };
   } catch (e) {
-    questionSuggestions[idx] = { state: 'error', answers: [], error: e.message || 'Lỗi AI' };
+    questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message || 'Lỗi AI' };
   }
   updateSuggestCard(idx);
+  updateDock();
   autoScroll();
+}
+
+// === Suggestion Dock logic (separated UI like mockup) ===
+function setupSuggestionDock() {
+  if (!suggestionDock) return;
+  // dock tab switching
+  const tabs = suggestionDock.querySelectorAll('.dock-tab[data-view]');
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      suggestView = btn.dataset.view;
+      tabs.forEach(b => { b.classList.toggle('active', b===btn); b.setAttribute('aria-selected', b===btn?'true':'false'); });
+      renderDockBody();
+    });
+  });
+  if (clearSuggestionsBtn) {
+    clearSuggestionsBtn.addEventListener('click', () => {
+      questionSuggestions = {};
+      selectedQuestionIdx = null;
+      updateDock();
+      showToast('Đã xóa gợi ý', 'success');
+    });
+  }
+}
+
+function updateDock() {
+  if (!suggestionDock) return;
+  const entries = Object.entries(questionSuggestions).sort((a,b)=>Number(a[0])-Number(b[0]));
+  const count = entries.length;
+  if (qCountBadge) qCountBadge.textContent = `${count} câu hỏi`;
+  // pills
+  if (questionPills) {
+    questionPills.innerHTML = '';
+    entries.forEach(([idx, data]) => {
+      const pill = document.createElement('button');
+      pill.className = 'q-pill' + (Number(idx)===selectedQuestionIdx ? ' active' : '');
+      pill.dataset.idx = idx;
+      const shortQ = (data.question || finalizedEnPhrases[idx] || '').slice(0,28);
+      pill.textContent = `#${Number(idx)+1} ${shortQ}${shortQ.length>=28?'…':''}`;
+      pill.title = data.question || finalizedEnPhrases[idx] || '';
+      pill.addEventListener('click', () => {
+        selectedQuestionIdx = Number(idx);
+        updateDock();
+        // scroll dock body to top
+        if (suggestionBody) suggestionBody.scrollTop = 0;
+      });
+      questionPills.appendChild(pill);
+    });
+  }
+  // auto-select latest if none
+  if (selectedQuestionIdx === null && entries.length > 0) {
+    selectedQuestionIdx = Number(entries[entries.length-1][0]);
+  }
+  if (selectedQuestionIdx !== null && !questionSuggestions[selectedQuestionIdx]) {
+    selectedQuestionIdx = entries.length ? Number(entries[0][0]) : null;
+  }
+  renderDockBody();
+}
+
+function renderDockBody() {
+  if (!suggestionBody) return;
+  if (Object.keys(questionSuggestions).length === 0) {
+    suggestionBody.innerHTML = '<div class="suggest-empty" id="suggestEmpty">Chưa có câu hỏi nào. Khi AI phát hiện câu hỏi, gợi ý sẽ hiện ở đây.</div>';
+    return;
+  }
+  if (selectedQuestionIdx === null || !questionSuggestions[selectedQuestionIdx]) {
+    suggestionBody.innerHTML = '<div class="suggest-empty">Chọn một câu hỏi ở trên để xem gợi ý.</div>';
+    return;
+  }
+  const data = questionSuggestions[selectedQuestionIdx];
+  if (data.state === 'loading') {
+    suggestionBody.innerHTML = `<div class="suggest-loading" style="padding:12px;display:flex;gap:8px;align-items:center;color:var(--text-2);font-size:12px"><div class="spinner" style="width:14px;height:14px;border-width:2px"></div> Đang tạo gợi ý cho: <em>${escapeHtml(data.question||'')}</em></div>`;
+    return;
+  }
+  if (data.state === 'error') {
+    suggestionBody.innerHTML = `<div class="suggest-error">⚠️ ${escapeHtml(data.error)}</div>`;
+    return;
+  }
+  // done
+  const showStructure = suggestView==='both' || suggestView==='structure';
+  const showComplete = suggestView==='both' || suggestView==='complete';
+  let html = '';
+  if (showStructure) {
+    const structures = data.structures && data.structures.length ? data.structures : synthesizeStructures(data.answers);
+    html += `<div class="dock-structure-list">` + structures.map((s,i)=>`
+      <div class="dock-structure-item">
+        <span class="idx">${i+1}.</span>
+        <span class="txt">${escapeHtml(s)}</span>
+        <span class="suggest-actions"><button class="suggest-copy" data-text="${escapeHtml(s).replace(/"/g,'&quot;')}" title="Sao chép">⎘</button></span>
+      </div>
+    `).join('') + `</div>`;
+  }
+  if (showComplete) {
+    html += `<div class="dock-complete-label">Câu trả lời hoàn chỉnh</div>`;
+    html += data.answers.map(a=>`
+      <div class="dock-complete-card">
+        <span style="flex:1">${escapeHtml(a)}</span>
+        <button class="copy-btn" data-text="${escapeHtml(a).replace(/"/g,'&quot;')}">Copy</button>
+      </div>
+    `).join('');
+  }
+  suggestionBody.innerHTML = html;
+  suggestionBody.querySelectorAll('[data-text]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const txt = btn.getAttribute('data-text');
+      if (txt) { await navigator.clipboard.writeText(txt); showToast('Đã sao chép','success'); }
+    });
+  });
 }
 
 // Split a finalized block into utterances.
@@ -907,53 +1058,13 @@ function updateUtteranceInPlace(idx) {
 }
 
 // Update the suggest card for a given utterance index
+// Inline card is now deprecated – suggestions are shown in the separated dock (like mockup).
+// Keep function as no-op for compat but ensure dock stays in sync.
 function updateSuggestCard(idx) {
+  // Intentionally keep inline cards empty/hidden; dock is the single source of truth
   const cache = utteranceDomCache[idx];
-  if (!cache) return;
-  const sug = questionSuggestions[idx];
-  if (!sug) return;
-  if (sug.state === 'loading') {
-    cache.suggestCard.innerHTML = `
-      <div class="suggest-card">
-        <div class="suggest-header">
-          <span class="suggest-title">💡 Gợi ý trả lời</span>
-          <span class="suggest-badge">AI • ${escapeHtml(providerConfig.model)}</span>
-        </div>
-        <div class="suggest-loading"><div class="spinner"></div> Đang tạo gợi ý…</div>
-      </div>`;
-  } else if (sug.state === 'error') {
-    cache.suggestCard.innerHTML = `
-      <div class="suggest-card">
-        <div class="suggest-header"><span class="suggest-title">💡 Gợi ý trả lời</span></div>
-        <div class="suggest-error">⚠️ ${escapeHtml(sug.error)}</div>
-      </div>`;
-  } else if (sug.state === 'done') {
-    const items = sug.answers.map((a, i2) =>
-      `<div class="suggest-item">
-        <span class="suggest-num">${i2+1}</span>
-        <span class="suggest-text">${escapeHtml(a)}</span>
-        <span class="suggest-actions"><button class="suggest-copy" data-text="${escapeHtml(a).replace(/"/g,'&quot;')}" title="Sao chép">⎘</button></span>
-      </div>`
-    ).join('');
-    cache.suggestCard.innerHTML = `
-      <div class="suggest-card">
-        <div class="suggest-header">
-          <span class="suggest-title">💡 Gợi ý trả lời</span>
-          <span class="suggest-badge">${sug.answers.length} gợi ý</span>
-        </div>
-        <div class="suggest-list">${items}</div>
-      </div>`;
-    // Bind suggest-copy buttons
-    cache.suggestCard.querySelectorAll('.suggest-copy').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const txt = btn.getAttribute('data-text');
-        if (txt) {
-          await navigator.clipboard.writeText(txt);
-          showToast('Đã sao chép gợi ý', 'success');
-        }
-      });
-    });
-  }
+  if (cache && cache.suggestCard) cache.suggestCard.innerHTML = '';
+  // dock will be updated by caller via updateDock()
 }
 
 function setViText(el, vi) {
@@ -1049,7 +1160,9 @@ function clearContent() {
   if (transcriptFeed) transcriptFeed.innerHTML = '';
   if (interimBlock) interimBlock.style.display = 'none';
   if (combinedPlaceholder) combinedPlaceholder.style.display = 'flex';
+  selectedQuestionIdx = null;
   updateWordCounts();
+  updateDock();
   
   // Clear summary output
   summaryPlaceholder.style.display = 'flex';
