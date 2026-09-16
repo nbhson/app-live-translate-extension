@@ -11,6 +11,7 @@ const MAX_INTERIM_LENGTH = 100; // 100 characters to force-finalize
 
 let finalizedEnPhrases = [];
 let finalizedViPhrases = [];
+let utteranceSpeakers = []; // parallel to finalizedEnPhrases, 0/1/2...
 let questionSuggestions = {}; // index -> { state, question, answers, structures, error }
 let suggestEnabled = true; // toggle via provider config
 let utteranceDomCache = []; // index -> { root, enEl, viEl, viTextEl, enTextEl, copyEn, copyVi, suggestCard }
@@ -18,6 +19,18 @@ let pendingRenderQueue = new Set();
 let renderScheduled = false;
 let selectedQuestionIdx = null;
 let suggestView = 'both'; // both | structure | complete
+
+// Heuristic speaker diarization (local, no ML model)
+let currentSpeakerId = 0;
+let lastSpeakerFeatures = null; // { rms, centroid }
+let speakerVadState = 'silence';
+let speakerVadSilenceMs = 0;
+let speakerVadLastSwitchAt = 0;
+let speakerMonitor = null; // { ctx, analyser, dataFreq, dataTime, timer }
+const SPEAKER_VAD_RMS_THRESH = 0.012; // ~ -38dB, tuned for tab/mic mix
+const SPEAKER_MIN_PAUSE_MS = 250; // pause that may indicate speaker change
+const SPEAKER_MIN_SPEECH_MS = 600; // ignore very short blips
+const SPEAKER_CENTROID_DIFF = 320; // Hz diff to consider different voice
 
 // Provider config state (custom: baseUrl + apiKey + model)
 let providerConfig = {
@@ -190,6 +203,38 @@ function setupEventListeners() {
 
   grantPermissionBtn.addEventListener('click', openPermissionTab);
 
+  // Track sticky scroll: user scrolled up -> stop auto-following until they return near bottom
+  if (transcriptContent) {
+    let stickScrollTick = false;
+    transcriptContent.addEventListener('scroll', () => {
+      if (stickScrollTick) return;
+      stickScrollTick = true;
+      requestAnimationFrame(() => {
+        stickScrollTick = false;
+        const autoScrollCheck = document.getElementById('autoScrollCheck');
+        if (!autoScrollCheck || !autoScrollCheck.checked) {
+          shouldStickToBottom = false;
+          return;
+        }
+        shouldStickToBottom = isNearBottom();
+      });
+    }, { passive: true });
+    // Initialize sticky state
+    shouldStickToBottom = isNearBottom();
+    // When the user toggles auto-scroll, re-evaluate stickiness
+    const autoScrollCheckEl = document.getElementById('autoScrollCheck');
+    if (autoScrollCheckEl) {
+      autoScrollCheckEl.addEventListener('change', () => {
+        if (autoScrollCheckEl.checked) {
+          shouldStickToBottom = true;
+          autoScroll(true);
+        } else {
+          shouldStickToBottom = false;
+        }
+      });
+    }
+  }
+
   // Re-check permission when the user focuses back on the side panel
   window.addEventListener('focus', async () => {
     const granted = await checkAndHidePermissionOverlay();
@@ -266,6 +311,7 @@ function startTabCapture() {
       }
       activeAudioTrack = tracks[0];
       window.capturedStream = stream;
+      setupSpeakerMonitor(stream);
 
       // Start speech recognition
       startListening();
@@ -285,6 +331,7 @@ function startTabCapture() {
 
 // Clean up tab capture resources
 function cleanupTabCapture() {
+  teardownSpeakerMonitor();
   if (window.capturedStream) {
     window.capturedStream.getTracks().forEach(track => track.stop());
     window.capturedStream = null;
@@ -296,6 +343,132 @@ function cleanupTabCapture() {
     } catch (e) {}
     window.capturedAudioContext = null;
   }
+}
+
+// --- Heuristic speaker monitor (local VAD + centroid) ---
+function setupSpeakerMonitor(stream) {
+  teardownSpeakerMonitor();
+  try {
+    const ctx = window.capturedAudioContext || new (window.AudioContext || window.webkitAudioContext)();
+    if (!window.capturedAudioContext) window.capturedAudioContext = ctx;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.3;
+    source.connect(analyser);
+    // keep audible loopback if it was tab capture (already connected), avoid double connect
+    const dataFreq = new Uint8Array(analyser.frequencyBinCount);
+    const dataTime = new Uint8Array(analyser.fftSize);
+    speakerMonitor = { ctx, analyser, dataFreq, dataTime, stream, timer: null, lastRms: 0, lastCentroid: 0, speechStartAt: 0 };
+    speakerVadState = 'silence';
+    speakerVadSilenceMs = 0;
+    // sample every 60ms
+    let lastTick = performance.now();
+    const tick = () => {
+      const now = performance.now();
+      const dt = now - lastTick;
+      lastTick = now;
+      analyser.getByteTimeDomainData(dataTime);
+      analyser.getByteFrequencyData(dataFreq);
+      let sum = 0;
+      for (let i = 0; i < dataTime.length; i++) {
+        const v = (dataTime[i] - 128) / 128;
+        sum += v * v;
+      }
+      const rms = Math.sqrt(sum / dataTime.length);
+      const centroid = computeSpectralCentroid(dataFreq, ctx.sampleRate);
+      const isSpeech = rms > SPEAKER_VAD_RMS_THRESH;
+      if (isSpeech) {
+        if (speakerVadState === 'silence') {
+          // speech just started
+          const pauseLen = speakerVadSilenceMs;
+          speakerVadState = 'speech';
+          speakerMonitor.speechStartAt = now;
+          if (pauseLen >= SPEAKER_MIN_PAUSE_MS) {
+            const feats = { rms, centroid };
+            if (shouldToggleSpeaker(feats, pauseLen)) {
+              currentSpeakerId = (currentSpeakerId + 1) % 2;
+              // force a live block cut so next interim gets a fresh block with new speaker
+              maybeCutLiveOnSpeakerChange();
+            }
+            lastSpeakerFeatures = feats;
+          } else if (!lastSpeakerFeatures) {
+            lastSpeakerFeatures = { rms, centroid };
+          }
+        } else {
+          // update running features for current speech segment
+          if (lastSpeakerFeatures) {
+            lastSpeakerFeatures.rms = lastSpeakerFeatures.rms * 0.85 + rms * 0.15;
+            lastSpeakerFeatures.centroid = lastSpeakerFeatures.centroid * 0.85 + centroid * 0.15;
+          }
+        }
+        speakerVadSilenceMs = 0;
+      } else {
+        // silence
+        if (speakerVadState === 'speech') {
+          speakerVadState = 'silence';
+        }
+        speakerVadSilenceMs += dt;
+      }
+      speakerMonitor.lastRms = rms;
+      speakerMonitor.lastCentroid = centroid;
+    };
+    speakerMonitor.timer = setInterval(tick, 60);
+  } catch (e) {
+    console.warn('setupSpeakerMonitor failed', e);
+  }
+}
+function teardownSpeakerMonitor() {
+  if (speakerMonitor && speakerMonitor.timer) {
+    clearInterval(speakerMonitor.timer);
+  }
+  speakerMonitor = null;
+  speakerVadState = 'silence';
+  speakerVadSilenceMs = 0;
+}
+function computeSpectralCentroid(freqData, sampleRate) {
+  const nyquist = sampleRate / 2;
+  const binHz = nyquist / freqData.length;
+  let sumAmp = 0, sumWeighted = 0;
+  for (let i = 0; i < freqData.length; i++) {
+    const amp = freqData[i] / 255;
+    if (amp < 0.02) continue;
+    sumAmp += amp;
+    sumWeighted += amp * (i * binHz);
+  }
+  return sumAmp > 0 ? sumWeighted / sumAmp : 0;
+}
+function shouldToggleSpeaker(feats, pauseLen) {
+  if (!lastSpeakerFeatures) return false;
+  const now = performance.now();
+  if (now - speakerVadLastSwitchAt < 900) return false; // debounce speaker flips
+  const rmsDiff = Math.abs(feats.rms - lastSpeakerFeatures.rms);
+  const centDiff = Math.abs(feats.centroid - lastSpeakerFeatures.centroid);
+  // longer pause lowers threshold a bit
+  const centThresh = pauseLen > 700 ? SPEAKER_CENTROID_DIFF * 0.75 : SPEAKER_CENTROID_DIFF;
+  const rmsThresh = 0.04;
+  // centroid is more discriminative than rms for different voices
+  if (centDiff > centThresh) {
+    speakerVadLastSwitchAt = now;
+    return true;
+  }
+  if (rmsDiff > rmsThresh && centDiff > centThresh * 0.6) {
+    speakerVadLastSwitchAt = now;
+    return true;
+  }
+  return false;
+}
+function maybeCutLiveOnSpeakerChange() {
+  const lastCache = utteranceDomCache[utteranceDomCache.length - 1];
+  if (!lastCache || !lastCache.isLive) return;
+  const liveText = (lastCache.enText && lastCache.enText.textContent || '').trim();
+  if (!liveText) return;
+  // finalize current live block immediately with its current text, start fresh live for new speaker
+  const curLen = liveText.length;
+  // use rawLength = finalizedOffset + curLen so finalize offset logic stays consistent
+  const rawLen = finalizedOffset + curLen;
+  forceFinalizeText(liveText, rawLen);
 }
 
 // Show Permission Overlay
@@ -322,6 +495,8 @@ function startListening() {
       if (activeAudioTrack) {
         recognition.start(activeAudioTrack);
       } else {
+        // Mic mode: also spin up a lightweight monitor from a parallel mic stream (best-effort)
+        setupMicSpeakerMonitor().catch(() => {});
         recognition.start();
       }
     } catch (e) {
@@ -340,6 +515,16 @@ function startListening() {
   }
 }
 
+async function setupMicSpeakerMonitor() {
+  if (speakerMonitor || window.capturedStream) return;
+  try {
+    const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // keep track so we can stop it on stopListening
+    window.micMonitorStream = micStream;
+    setupSpeakerMonitor(micStream);
+  } catch {}
+}
+
 // Stop Speech Recognition
 function stopListening() {
   isListening = false;
@@ -353,6 +538,11 @@ function stopListening() {
   if (silenceTimer) {
     clearTimeout(silenceTimer);
     silenceTimer = null;
+  }
+  teardownSpeakerMonitor();
+  if (window.micMonitorStream) {
+    try { window.micMonitorStream.getTracks().forEach(t => t.stop()); } catch {}
+    window.micMonitorStream = null;
   }
   cleanupTabCapture();
   updateUIForListening(false);
@@ -423,15 +613,20 @@ function initRecognition() {
     
     if (interimEn) {
       hidePlaceholders();
-      if (englishInterim) englishInterim.innerText = interimEn + '...';
-      if (interimBlock) interimBlock.style.display = 'flex';
-      debouncedTranslateInterim(interimEn);
+      // Live: render interim into the last utterance slot (sticky live block)
+      ensureLiveUtterance();
+      const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
+      if (liveCache && liveCache.enText) {
+        liveCache.enText.textContent = interimEn;
+        liveCache.enText.classList.add('typing');
+      }
+      // Follow the live feed only while the user is near the bottom (sticky)
       autoScroll();
-      
-      // Capture length and trigger timer
+
+      // Trigger timer
       const lastResultIndex = event.results.length - 1;
       const currentRawTextLength = event.results[lastResultIndex][0].transcript.length;
-      
+
       if (interimEn.length >= MAX_INTERIM_LENGTH) {
         await forceFinalizeText(interimEn, currentRawTextLength);
       } else {
@@ -789,15 +984,64 @@ async function finalizeText(text) {
   const cleanText = text.trim();
   if (!cleanText) return;
 
+  // If a live utterance is pending, promote it with this text instead of appending a new one
+  const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
+  if (liveCache && liveCache.isLive) {
+    const liveSpeaker = liveCache._speakerId !== undefined ? liveCache._speakerId : currentSpeakerId;
+    promoteLiveToFinal(cleanText);
+    const idx = utteranceDomCache.length - 1;
+    utteranceSpeakers[idx] = liveSpeaker;
+    // ensure DOM reflects speaker (badge/color)
+    if (liveCache) applySpeakerToDom(liveCache, liveSpeaker);
+    updateWordCounts();
+    showStatus('Đang dịch...');
+    const translated = await translateText(cleanText);
+    finalizedViPhrases[idx] = translated || '[Không thể dịch]';
+    if (liveCache) {
+      setViText(liveCache.viText, finalizedViPhrases[idx]);
+      liveCache.copyVi.dataset.text = finalizedViPhrases[idx];
+      liveCache.copyVi.disabled = false;
+      if (liveCache.colVi && finalizedViPhrases[idx] !== '[Không thể dịch]') {
+        liveCache.colVi.classList.add('vi-just-arrived');
+        setTimeout(() => liveCache.colVi.classList.remove('vi-just-arrived'), 800);
+      }
+    }
+    updateWordCounts();
+    if (activeAudioTrack) {
+      showStatus('Đang dịch âm thanh Tab...');
+    } else {
+      showStatus('Đang nghe tiếng Anh (Mic)...');
+    }
+    // Promoting live -> layout changes; force sticky scroll to the new final utterance
+    shouldStickToBottom = true;
+    autoScroll(true);
+
+    // After translation, detect question and trigger AI suggest (non-blocking)
+    if (isQuestion(cleanText)) {
+      triggerSuggestForIndex(idx, cleanText);
+    }
+    return;
+  }
+
   // Split the incoming block into separate utterances for cleaner display
   const utterances = splitIntoUtterances(cleanText);
   const firstIdx = finalizedEnPhrases.length;
 
   hidePlaceholders();
+  // Assign speaker to each new sub-utterance (heuristic: alternate if long pause already toggled,
+  // otherwise keep currentSpeakerId; if multiple sub-utterances from same block, alternate them)
+  const baseSpeaker = currentSpeakerId;
   // Push all utterances to EN
-  utterances.forEach(u => finalizedEnPhrases.push(u));
+  utterances.forEach((u, k) => {
+    finalizedEnPhrases.push(u);
+    // if split produced multiple utterances from one final block, treat them as possibly different speakers
+    // but only alternate when we already detected a speaker switch recently; otherwise keep same
+    utteranceSpeakers.push(baseSpeaker);
+  });
   // Push placeholder to VI
   utterances.forEach(() => finalizedViPhrases.push('…'));
+  // Capture stickiness before appending new nodes (scrollHeight will grow)
+  if (isNearBottom()) shouldStickToBottom = true;
   // Append each new utterance to the feed (DOM, no full re-render)
   for (let i = 0; i < utterances.length; i++) {
     const idx = firstIdx + i;
@@ -811,16 +1055,25 @@ async function finalizeText(text) {
   showStatus('Đang dịch...');
   for (let k = 0; k < utterances.length; k++) {
     const idx = firstIdx + k;
+    const cache = utteranceDomCache[idx];
+    // Skip translation entirely when this slot already has a result (e.g. re-finalize)
+    if (finalizedViPhrases[idx] && finalizedViPhrases[idx] !== '…') {
+      if (cache) {
+        setViText(cache.viText, finalizedViPhrases[idx]);
+        cache.copyVi.dataset.text = finalizedViPhrases[idx];
+        cache.copyVi.disabled = false;
+      }
+      continue;
+    }
     const translated = await translateText(utterances[k]);
     finalizedViPhrases[idx] = translated || '[Không thể dịch]';
     // Update only this utterance's VI text in place
-    const cache = utteranceDomCache[idx];
     if (cache) {
       setViText(cache.viText, finalizedViPhrases[idx]);
       cache.copyVi.dataset.text = finalizedViPhrases[idx];
       cache.copyVi.disabled = false;
       // Flash the VI column to show it just arrived
-      if (cache.colVi) {
+      if (cache.colVi && finalizedViPhrases[idx] !== '[Không thể dịch]') {
         cache.colVi.classList.add('vi-just-arrived');
         setTimeout(() => cache.colVi.classList.remove('vi-just-arrived'), 800);
       }
@@ -838,7 +1091,8 @@ async function finalizeText(text) {
   if (englishInterim) englishInterim.innerText = '';
   if (vietnameseInterim) vietnameseInterim.innerText = '';
   if (interimBlock) interimBlock.style.display = 'none';
-  autoScroll();
+  shouldStickToBottom = true;
+  autoScroll(true);
 
   // After translation, detect question and trigger AI suggest (non-blocking)
   utterances.forEach((u, k) => {
@@ -866,6 +1120,55 @@ async function forceFinalizeText(text, rawLength) {
   await finalizeText(text);
 }
 
+// Live utterance helpers: the last feed item acts as the "live" block while speech
+// is in progress. It is finalized in place (no re-ordering, no layout jump).
+function ensureLiveUtterance() {
+  const lastCache = utteranceDomCache[utteranceDomCache.length - 1];
+  if (lastCache && lastCache.isLive) return lastCache;
+  // Capture stickiness before DOM grows (scrollHeight will increase)
+  const wasNear = isNearBottom();
+  if (wasNear) shouldStickToBottom = true;
+  // Create a fresh live slot with current speaker
+  const idx = finalizedEnPhrases.length;
+  finalizedEnPhrases.push('');
+  finalizedViPhrases.push('…');
+  utteranceSpeakers.push(currentSpeakerId);
+  const cache = buildUtteranceDom(idx, '', '…');
+  cache.isLive = true;
+  cache._speakerId = currentSpeakerId;
+  cache.root.classList.add('is-live');
+  applySpeakerToDom(cache, currentSpeakerId);
+  utteranceDomCache[idx] = cache;
+  return cache;
+}
+
+function promoteLiveToFinal(enText) {
+  const lastCache = utteranceDomCache[utteranceDomCache.length - 1];
+  if (lastCache && lastCache.isLive) {
+    lastCache.isLive = false;
+    lastCache.root.classList.remove('is-live');
+    lastCache.root.classList.add('was-live');
+    const en = enText || finalizedEnPhrases[utteranceDomCache.length - 1] || '';
+    finalizedEnPhrases[utteranceDomCache.length - 1] = en;
+    if (lastCache.enText) {
+      lastCache.enText.textContent = en;
+      lastCache.enText.classList.remove('typing');
+    }
+    if (lastCache.copyEn) lastCache.copyEn.dataset.text = en;
+    const isQ = isQuestion(en);
+    lastCache.root.classList.toggle('question', isQ);
+    if (isQ && lastCache.enText && !lastCache.enText.querySelector('.question-mark')) {
+      const qSpan = document.createElement('span');
+      qSpan.className = 'question-mark';
+      qSpan.textContent = '?';
+      lastCache.enText.appendChild(document.createTextNode(' '));
+      lastCache.enText.appendChild(qSpan);
+    }
+    return true;
+  }
+  return false;
+}
+
 // Translate Text via Google Translate free API
 async function translateText(text) {
   if (!text || !text.trim()) return '';
@@ -890,27 +1193,26 @@ async function translateText(text) {
   }
 }
 
-// Debounce Interim Translation to avoid rate limits
-let interimTranslateTimeout = null;
+// Update the live VI preview inside the live utterance (debounced)
+let liveViDebounce = null;
 function debouncedTranslateInterim(text) {
-  if (interimTranslateTimeout) {
-    clearTimeout(interimTranslateTimeout);
+  if (liveViDebounce) {
+    clearTimeout(liveViDebounce);
   }
-  
-  interimTranslateTimeout = setTimeout(async () => {
+
+  liveViDebounce = setTimeout(async () => {
     if (!text || !text.trim()) {
-      if (vietnameseInterim) vietnameseInterim.innerText = '';
-      if (interimBlock && !englishInterim.innerText) interimBlock.style.display = 'none';
       return;
     }
-    
+    // Only update while this is still the live utterance
+    const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
+    if (!liveCache || !liveCache.isLive) return;
+
     const translated = await translateText(text);
-    // Double check if interim text has not changed during API request
-    const currentInterimEn = englishInterim ? englishInterim.innerText.replace('...', '') : '';
-    if (currentInterimEn && text.trim() === currentInterimEn.trim()) {
-      if (vietnameseInterim) vietnameseInterim.innerText = translated + '...';
-      if (interimBlock) interimBlock.style.display = 'flex';
-      autoScroll();
+    // Re-check live state after the async translation
+    const stillLive = utteranceDomCache[utteranceDomCache.length - 1];
+    if (stillLive && stillLive.isLive && liveCache.enText && liveCache.enText.textContent === text) {
+      setViText(liveCache.viText, translated);
     }
   }, 300);
 }
@@ -937,16 +1239,29 @@ function renderCombined() {
   for (let i = 0; i < finalizedEnPhrases.length; i++) {
     if (!utteranceDomCache[i]) {
       appendUtterance(i);
-    } else {
+    } else if (!(utteranceDomCache[i].isLive)) {
       updateUtteranceInPlace(i);
     }
   }
 }
 
-// Add a single utterance to the feed (new item at the end)
-function appendUtterance(idx) {
-  const en = finalizedEnPhrases[idx] || '';
-  const vi = finalizedViPhrases[idx] !== undefined ? finalizedViPhrases[idx] : '…';
+function applySpeakerToDom(cache, speakerId) {
+  if (!cache || !cache.root) return;
+  cache._speakerId = speakerId;
+  cache.root.setAttribute('data-speaker', String(speakerId));
+  cache.root.classList.remove('speaker-0', 'speaker-1');
+  cache.root.classList.add(`speaker-${speakerId % 2}`);
+  // remove any legacy badge if it exists (no longer displayed)
+  if (cache.speakerBadge && cache.speakerBadge.parentNode) {
+    cache.speakerBadge.remove();
+    cache.speakerBadge = null;
+  }
+  const legacy = cache.root.querySelector('.speaker-badge');
+  if (legacy) legacy.remove();
+}
+
+// Build the DOM for an utterance (shared by appendUtterance and live slot)
+function buildUtteranceDom(idx, en, vi) {
   const isQ = isQuestion(en);
   const qMark = isQ ? ' <span class="question-mark">?</span>' : '';
 
@@ -1026,13 +1341,30 @@ function appendUtterance(idx) {
   copyEn.addEventListener('click', () => handleCopy(copyEn));
   copyVi.addEventListener('click', () => handleCopy(copyVi));
 
-  // Insert into feed
-  transcriptFeed.appendChild(root);
+  // Insert into feed (before the interim block if present, so interim stays at bottom)
+  if (interimBlock && interimBlock.parentNode === transcriptFeed) {
+    transcriptFeed.insertBefore(root, interimBlock);
+  } else {
+    transcriptFeed.appendChild(root);
+  }
 
-  // Cache
-  utteranceDomCache[idx] = {
-    root, body, colEn, colVi, enText, viText, copyEn, copyVi, suggestCard
+  return {
+    root, body, colEn, colVi, enText, viText, copyEn, copyVi, suggestCard,
+    isLive: false
   };
+}
+
+// Add a single utterance to the feed (new item at the end)
+function appendUtterance(idx) {
+  const en = finalizedEnPhrases[idx] || '';
+  const vi = finalizedViPhrases[idx] !== undefined ? finalizedViPhrases[idx] : '…';
+  const spk = utteranceSpeakers[idx] !== undefined ? utteranceSpeakers[idx] : currentSpeakerId;
+
+  const cache = buildUtteranceDom(idx, en, vi);
+  cache._speakerId = spk;
+  applySpeakerToDom(cache, spk);
+  utteranceSpeakers[idx] = spk;
+  utteranceDomCache[idx] = cache;
 
   // Auto scroll
   autoScroll();
@@ -1055,6 +1387,16 @@ function updateUtteranceInPlace(idx) {
   } else {
     cache.copyVi.disabled = true;
   }
+  // Keep EN text in sync with finalized phrases
+  const en = finalizedEnPhrases[idx] || '';
+  if (cache.enText && en && cache.enText.textContent !== en) {
+    cache.enText.textContent = en;
+    cache.copyEn.dataset.text = en;
+  }
+  const spk = utteranceSpeakers[idx];
+  if (spk !== undefined && cache._speakerId !== spk) {
+    applySpeakerToDom(cache, spk);
+  }
 }
 
 // Update the suggest card for a given utterance index
@@ -1069,28 +1411,54 @@ function updateSuggestCard(idx) {
 
 function setViText(el, vi) {
   if (vi === '…' || vi === undefined || vi === '') {
+    // Keep the loading state only when there is no previous translation to show
     el.innerHTML = '<span class="vi-loading">Đang dịch…</span>';
   } else {
     el.textContent = vi;
   }
 }
 
-// Smooth auto-scroll: throttle to avoid layout thrash
+// Smooth auto-scroll: sticky to bottom unless the user has scrolled up
+// Fix: isNearBottom must be evaluated BEFORE DOM growth, and throttling must coalesce.
 let scrollScheduled = false;
-function autoScroll() {
-  if (scrollScheduled) return;
+let pendingScrollForce = false;
+// Track whether the user wants sticky follow (true = near bottom or fresh session)
+let shouldStickToBottom = true;
+
+function isNearBottom() {
+  if (!transcriptContent) return true;
+  return (transcriptContent.scrollHeight - transcriptContent.scrollTop - transcriptContent.clientHeight) < 120;
+}
+function autoScroll(force = false) {
+  if (force) pendingScrollForce = true;
+  // Capture stickiness at call time (before RAF, before next DOM growth is measured)
+  const autoScrollCheck = document.getElementById('autoScrollCheck');
+  const enabled = !!(autoScrollCheck && autoScrollCheck.checked);
+  if (!enabled) {
+    // still schedule so pendingScrollForce is cleared correctly
+    return;
+  }
+  if (!force) {
+    // Only stick if the user was already near bottom at this moment.
+    // If the user scrolled up, we respect that and do not yank them down.
+    // shouldStickToBottom is updated on scroll events; fallback to live isNearBottom().
+    if (!shouldStickToBottom && !isNearBottom()) return;
+  }
+  if (scrollScheduled) {
+    // coalesce: keep pending force flag, actual scroll will happen on the scheduled frame
+    return;
+  }
   scrollScheduled = true;
   requestAnimationFrame(() => {
     scrollScheduled = false;
-    const autoScrollCheck = document.getElementById('autoScrollCheck');
-    if (autoScrollCheck && autoScrollCheck.checked && transcriptContent) {
-      const nearBottom = (transcriptContent.scrollHeight - transcriptContent.scrollTop - transcriptContent.clientHeight) < 60;
-      if (nearBottom || true) {
-        transcriptContent.scrollTo({
-          top: transcriptContent.scrollHeight,
-          behavior: 'smooth'
-        });
-      }
+    const mustForce = pendingScrollForce;
+    pendingScrollForce = false;
+    if (!transcriptContent || !enabled) return;
+    if (mustForce || shouldStickToBottom || isNearBottom()) {
+      transcriptContent.scrollTo({
+        top: transcriptContent.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   });
 }
@@ -1144,13 +1512,21 @@ function updateUIForListening(active) {
 function clearContent() {
   finalizedEnPhrases = [];
   finalizedViPhrases = [];
+  utteranceSpeakers = [];
   questionSuggestions = {};
   utteranceDomCache = [];
+  currentSpeakerId = 0;
+  lastSpeakerFeatures = null;
+  speakerVadLastSwitchAt = 0;
   lastFinalIndex = -1;
   finalizedOffset = 0;
   if (silenceTimer) {
     clearTimeout(silenceTimer);
     silenceTimer = null;
+  }
+  if (liveViDebounce) {
+    clearTimeout(liveViDebounce);
+    liveViDebounce = null;
   }
   
   if (englishLog) englishLog.innerHTML = '';
@@ -1659,16 +2035,14 @@ function setupKeyboardShortcuts() {
 
 // Helper to get all combined English text
 function getFullEnglishText() {
-  const final = finalizedEnPhrases.join(' ');
-  const interim = englishInterim.innerText.replace('...', '').trim();
-  return (final + ' ' + interim).trim();
+  const final = finalizedEnPhrases.filter(Boolean).join(' ');
+  return final.trim();
 }
 
 // Helper to get all combined Vietnamese text
 function getFullVietnameseText() {
-  const final = finalizedViPhrases.join(' ');
-  const interim = vietnameseInterim.innerText.replace('...', '').trim();
-  return (final + ' ' + interim).trim();
+  const final = finalizedViPhrases.filter(v => v && v !== '…' && v !== '[Không thể dịch]').join(' ');
+  return final.trim();
 }
 
 // Copy to Clipboard utility
