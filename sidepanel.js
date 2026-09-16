@@ -28,7 +28,7 @@ let speakerVadSilenceMs = 0;
 let speakerVadLastSwitchAt = 0;
 let speakerMonitor = null; // { ctx, analyser, dataFreq, dataTime, timer }
 const SPEAKER_VAD_RMS_THRESH = 0.012; // ~ -38dB, tuned for tab/mic mix
-const SPEAKER_MIN_PAUSE_MS = 250; // pause that may indicate speaker change
+const SPEAKER_MIN_PAUSE_MS = 350; // pause that may indicate speaker change
 const SPEAKER_MIN_SPEECH_MS = 600; // ignore very short blips
 const SPEAKER_CENTROID_DIFF = 320; // Hz diff to consider different voice
 
