@@ -90,6 +90,11 @@
             <input type="checkbox" id="suggestToggle" checked>
             <span class="suggest-toggle-label">💡 AI</span>
           </label>
+          <label class="suggest-toggle-wrap compress-toggle-wrap" title="Nén lịch sử mỗi 5 phút bằng AI (tiết kiệm token, giữ ngữ cảnh dài)">
+            <input type="checkbox" id="compressToggle">
+            <span>🗜️ Nén 5p</span>
+            <span id="compressBadge" class="compress-badge" style="display:none"></span>
+          </label>
           <span class="auto-badge" title="Dịch tự động bằng Google Translate">Auto</span>
           <button id="copyEnBtn" class="copy-pill-btn copy-pill-en" title="Sao chép tiếng Anh" aria-label="Sao chép tiếng Anh">
             <span class="pill-label">EN</span>
@@ -147,8 +152,10 @@
           <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Cấu trúc</button>
           <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Câu hoàn chỉnh</button>
           <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Xóa gợi ý">Xóa</button>
+          <button class="dock-tab ghost" id="manualCompressBtn" title="Nén ngay lịch sử chưa nén">Nén ngay</button>
         </div>
       </div>
+      <div class="compress-status" id="compressStatus" style="display:none"></div>
       <div class="question-pills" id="questionPills" role="tablist" aria-label="Danh sách câu hỏi"></div>
       <div class="suggestion-body scrollable" id="suggestionBody">
         <div class="suggest-empty" id="suggestEmpty">Chưa có câu hỏi nào. Khi AI phát hiện câu hỏi, gợi ý sẽ hiện ở đây.</div>

@@ -20,6 +20,16 @@ let renderScheduled = false;
 let selectedQuestionIdx = null;
 let suggestView = 'both'; // both | structure | complete
 
+// Rolling compress (B) – 5 min interval + recent 10
+let compressEnabled = false; // user toggle
+let compressedSummary = ""; // rolling compressed history (text)
+let lastCompressedIdx = 0; // index in finalizedEnPhrases already compressed
+let compressTimer = null;
+let compressInProgress = false;
+const COMPRESS_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const COMPRESS_RECENT_KEEP = 10;
+const COMPRESS_MAX_CHARS = 3000; // truncate compressed history for prompt
+
 // Heuristic speaker diarization (local, no ML model)
 let currentSpeakerId = 0;
 let lastSpeakerFeatures = null; // { rms, centroid }
@@ -120,9 +130,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupSummaryFeatures();
   setupKeyboardShortcuts();
   setupSuggestToggle();
+  setupCompressToggle();
   setupSuggestionDock();
   await loadProviderConfig();
   await loadSuggestPref();
+  await loadCompressPref();
   await checkAndHidePermissionOverlay();
   updateWordCounts();
   updateDock();
@@ -147,6 +159,92 @@ function setupSuggestToggle() {
       // optionally keep existing suggestions but not generate new
     }
   });
+}
+
+async function loadCompressPref() {
+  try {
+    const r = await chrome.storage.local.get(['compressEnabled','compressedSummary','lastCompressedIdx']);
+    if (r.compressEnabled !== undefined) {
+      compressEnabled = !!r.compressEnabled;
+      const t = document.getElementById('compressToggle');
+      if (t) t.checked = compressEnabled;
+    }
+    if (r.compressedSummary) compressedSummary = r.compressedSummary;
+    if (r.lastCompressedIdx !== undefined) lastCompressedIdx = Number(r.lastCompressedIdx) || 0;
+    updateCompressToggleUI();
+    if (compressEnabled && isListening) startCompressTimer();
+  } catch {}
+}
+function setupCompressToggle() {
+  const el = document.getElementById('compressToggle');
+  if (el) {
+    el.addEventListener('change', async () => {
+      compressEnabled = el.checked;
+      try { await chrome.storage.local.set({ compressEnabled }); } catch {}
+      updateCompressToggleUI();
+      showToast(compressEnabled ? 'Đã bật nén lịch sử 5 phút' : 'Đã tắt nén lịch sử', 'default');
+      if (compressEnabled) {
+        startCompressTimer();
+        // optional immediate compress if backlog
+        if (finalizedEnPhrases.length - lastCompressedIdx >= 5) {
+          performCompression(false);
+        }
+      } else {
+        stopCompressTimer();
+      }
+    });
+  }
+  const manualBtn = document.getElementById('manualCompressBtn');
+  if (manualBtn) {
+    manualBtn.addEventListener('click', async () => {
+      if (!compressEnabled) {
+        showToast('Bật Nén 5p trước khi nén thủ công', 'default');
+        return;
+      }
+      await performCompression(true);
+      updateCompressToggleUI();
+    });
+  }
+}
+function updateCompressToggleUI() {
+  const el = document.getElementById('compressToggle');
+  const badge = document.getElementById('compressBadge');
+  const statusEl = document.getElementById('compressStatus');
+  if (el) el.checked = compressEnabled;
+  if (badge) {
+    if (compressedSummary) {
+      badge.textContent = `Đã nén ${lastCompressedIdx} câu`;
+      badge.style.display = 'inline-block';
+    } else {
+      badge.textContent = compressEnabled ? 'Chờ nén…' : '';
+      badge.style.display = compressEnabled ? 'inline-block' : 'none';
+    }
+  }
+  if (statusEl) {
+    const pending = finalizedEnPhrases.length - lastCompressedIdx;
+    if (!compressEnabled) {
+      statusEl.style.display = 'none';
+    } else if (compressedSummary) {
+      statusEl.style.display = 'flex';
+      statusEl.classList.add('has-content');
+      statusEl.textContent = `🗜️ Đã nén ${lastCompressedIdx} câu • ${pending} câu chờ • ${compressedSummary.length} ký tự`;
+    } else if (pending > 0) {
+      statusEl.style.display = 'flex';
+      statusEl.classList.remove('has-content');
+      statusEl.textContent = `🗜️ Chờ nén: ${pending} câu chưa nén (tự động mỗi 5 phút)`;
+    } else {
+      statusEl.style.display = 'flex';
+      statusEl.classList.remove('has-content');
+      statusEl.textContent = `🗜️ Nén 5 phút đang bật — chờ transcript…`;
+    }
+  }
+  const manualBtn = document.getElementById('manualCompressBtn');
+  if (manualBtn) {
+    manualBtn.style.display = compressEnabled ? 'inline-block' : 'none';
+    const pending = finalizedEnPhrases.length - lastCompressedIdx;
+    manualBtn.disabled = compressInProgress || pending < 2;
+    manualBtn.title = pending < 2 ? 'Chưa đủ câu để nén' : `Nén ngay ${pending} câu chưa nén`;
+  }
 }
 
 // Check microphone permission and hide overlay if granted
@@ -545,6 +643,7 @@ function stopListening() {
     window.micMonitorStream = null;
   }
   cleanupTabCapture();
+  stopCompressTimer();
   updateUIForListening(false);
   showStatus('Đã dừng');
 }
@@ -570,6 +669,7 @@ function initRecognition() {
     } else {
       showStatus('Đang nghe tiếng Anh (Mic)...');
     }
+    if (compressEnabled) startCompressTimer();
   };
   
   recognition.onresult = async (event) => {
@@ -687,6 +787,25 @@ function isQuestion(text) {
 }
 
 function buildSuggestPrompt(question, contextEn) {
+  // B mode: if compress enabled and we have rolling summary, use compressed + recent 10
+  if (compressEnabled && compressedSummary) {
+    const recent = contextEn.slice(-COMPRESS_RECENT_KEEP);
+    const recentCtx = recent.join(' | ');
+    const comp = compressedSummary.length > COMPRESS_MAX_CHARS ? compressedSummary.slice(-COMPRESS_MAX_CHARS) : compressedSummary;
+    return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, concise, polite).
+
+Compressed history (older, summarized every 5 min): """${comp}"""
+
+Recent conversation (latest ${recent.length} utterances): """${recentCtx}"""
+
+Question: """${question}"""
+
+Task: Use BOTH compressed history and recent conversation to generate context-aware answers. Return JSON with two fields:
+- "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
+- "answers": 3 full natural answers in English (1 sentence each, diverse angles: friendly / concise / playful etc, each may contain placeholder [City, Country] if location question). Answers MUST be consistent with the history.
+
+Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1","Answer 2","Answer 3"]}. No markdown, no extra text.`;
+  }
   const ctx = contextEn.slice(-4).join(' | ');
   return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, concise, polite).
 
@@ -749,6 +868,108 @@ async function callProviderForSuggest(prompt) {
   }
 }
 
+async function callProviderGeneric(prompt, opts = {}) {
+  const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
+  const model = providerConfig.model;
+  const apiKey = providerConfig.apiKey;
+  const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  const temperature = opts.temperature ?? 0.4;
+  const maxTokens = opts.maxTokens ?? 512;
+  const systemPrompt = opts.systemPrompt || '';
+  if (isGemini) {
+    const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
+    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens } })
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } else {
+    const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    const messages = [];
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+    messages.push({ role: 'user', content: prompt });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
+    });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    let txt = data.choices?.[0]?.message?.content || '';
+    if (!txt && data.message?.content) txt = data.message.content;
+    return txt;
+  }
+}
+
+async function performCompression(isManual = false) {
+  if (compressInProgress) return;
+  if (!compressEnabled && !isManual) return;
+  const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
+  if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
+    if (isManual) showToast('Chưa cấu hình AI Provider để nén', 'error');
+    return;
+  }
+  const pendingCount = finalizedEnPhrases.length - lastCompressedIdx;
+  if (pendingCount < 2) {
+    if (isManual) showToast('Chưa đủ câu để nén', 'default');
+    return;
+  }
+  const segment = finalizedEnPhrases.slice(lastCompressedIdx).join('\n');
+  if (!segment.trim()) return;
+  compressInProgress = true;
+  showStatus('Đang nén lịch sử…');
+  try {
+    const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${segment}"""`;
+    const summary = await callProviderGeneric(prompt, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
+    const clean = summary.trim();
+    if (clean) {
+      const header = `\n[+${pendingCount} utterances @ ${new Date().toLocaleTimeString()}]`;
+      compressedSummary = (compressedSummary ? compressedSummary + header + '\n' : '') + clean;
+      // truncate to keep within limit (keep last ~6000 chars)
+      if (compressedSummary.length > 6000) compressedSummary = compressedSummary.slice(-6000);
+      lastCompressedIdx = finalizedEnPhrases.length;
+      try { await chrome.storage.local.set({ compressedSummary, lastCompressedIdx }); } catch {}
+      updateCompressToggleUI();
+      if (isManual) showToast(`Đã nén ${pendingCount} câu`, 'success');
+      else console.log('[compress] auto compressed', pendingCount, 'utterances');
+    }
+  } catch (e) {
+    console.warn('compress failed', e);
+    if (isManual) showToast('Nén thất bại: ' + e.message, 'error');
+  } finally {
+    compressInProgress = false;
+    showStatus(isListening ? (activeAudioTrack ? 'Đang dịch âm thanh Tab...' : 'Đang nghe tiếng Anh (Mic)...') : 'Sẵn sàng');
+  }
+}
+
+function startCompressTimer() {
+  stopCompressTimer();
+  if (!compressEnabled) return;
+  compressTimer = setInterval(() => {
+    performCompression(false);
+  }, COMPRESS_INTERVAL_MS);
+}
+function stopCompressTimer() {
+  if (compressTimer) {
+    clearInterval(compressTimer);
+    compressTimer = null;
+  }
+}
+
 function parseSuggestAnswers(raw) {
   if (!raw) return { structures: [], answers: [] };
   // try JSON object {structures, answers}
@@ -799,7 +1020,11 @@ async function triggerSuggestForIndex(idx, question) {
   updateSuggestCard(idx);
   updateDock();
   try {
-    const prompt = buildSuggestPrompt(question, finalizedEnPhrases.slice(Math.max(0, idx-3), idx+1));
+    // B mode: when compress enabled, feed more context (recent 10 + compressed); else classic 4
+    const contextSlice = compressEnabled
+      ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
+      : finalizedEnPhrases.slice(Math.max(0, idx-3), idx+1);
+    const prompt = buildSuggestPrompt(question, contextSlice);
     const raw = await callProviderForSuggest(prompt);
     const parsed = parseSuggestAnswers(raw);
     let { structures, answers } = parsed;
@@ -1020,6 +1245,7 @@ async function finalizeText(text) {
     if (isQuestion(cleanText)) {
       triggerSuggestForIndex(idx, cleanText);
     }
+    updateCompressToggleUI();
     return;
   }
 
@@ -1100,6 +1326,7 @@ async function finalizeText(text) {
       triggerSuggestForIndex(firstIdx + k, u);
     }
   });
+  updateCompressToggleUI();
 }
 
 // Force finalize from interim speech
@@ -1509,7 +1736,7 @@ function updateUIForListening(active) {
 }
 
 // Clear all transcript lists and logs
-function clearContent() {
+async function clearContent() {
   finalizedEnPhrases = [];
   finalizedViPhrases = [];
   utteranceSpeakers = [];
@@ -1537,6 +1764,11 @@ function clearContent() {
   if (interimBlock) interimBlock.style.display = 'none';
   if (combinedPlaceholder) combinedPlaceholder.style.display = 'flex';
   selectedQuestionIdx = null;
+  // reset compress state as well
+  compressedSummary = "";
+  lastCompressedIdx = 0;
+  try { await chrome.storage.local.set({ compressedSummary: "", lastCompressedIdx: 0 }); } catch {}
+  updateCompressToggleUI();
   updateWordCounts();
   updateDock();
   
