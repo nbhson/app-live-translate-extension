@@ -313,7 +313,7 @@ function setupEventListeners() {
 
   grantPermissionBtn.addEventListener('click', openPermissionTab);
 
-  // Track sticky scroll: user scrolled up -> stop auto-following until they return near bottom
+  // Track sticky scroll: newest is on top -> user scrolled down away from top -> stop auto-following until they return near top
   if (transcriptContent) {
     let stickScrollTick = false;
     transcriptContent.addEventListener('scroll', () => {
@@ -323,23 +323,23 @@ function setupEventListeners() {
         stickScrollTick = false;
         const autoScrollCheck = document.getElementById('autoScrollCheck');
         if (!autoScrollCheck || !autoScrollCheck.checked) {
-          shouldStickToBottom = false;
+          shouldStickToTop = false;
           return;
         }
-        shouldStickToBottom = isNearBottom();
+        shouldStickToTop = isNearTop();
       });
     }, { passive: true });
     // Initialize sticky state
-    shouldStickToBottom = isNearBottom();
+    shouldStickToTop = isNearTop();
     // When the user toggles auto-scroll, re-evaluate stickiness
     const autoScrollCheckEl = document.getElementById('autoScrollCheck');
     if (autoScrollCheckEl) {
       autoScrollCheckEl.addEventListener('change', () => {
         if (autoScrollCheckEl.checked) {
-          shouldStickToBottom = true;
+          shouldStickToTop = true;
           autoScroll(true);
         } else {
-          shouldStickToBottom = false;
+          shouldStickToTop = false;
         }
       });
     }
@@ -1277,8 +1277,8 @@ async function finalizeText(text) {
     } else {
       showStatus('Đang nghe tiếng Anh (Mic)...');
     }
-    // Promoting live -> layout changes; force sticky scroll to the new final utterance
-    shouldStickToBottom = true;
+    // Promoting live -> layout changes; force sticky scroll to the new final utterance (newest on top)
+    shouldStickToTop = true;
     autoScroll(true);
 
     // After translation, detect question and trigger AI suggest (non-blocking)
@@ -1306,9 +1306,9 @@ async function finalizeText(text) {
   });
   // Push placeholder to VI
   utterances.forEach(() => finalizedViPhrases.push('…'));
-  // Capture stickiness before appending new nodes (scrollHeight will grow)
-  if (isNearBottom()) shouldStickToBottom = true;
-  // Append each new utterance to the feed (DOM, no full re-render)
+  // Capture stickiness before appending new nodes (newest on top, so stick to top)
+  if (isNearTop()) shouldStickToTop = true;
+  // Prepend each new utterance to the feed (newest on top, DOM order = visual order)
   for (let i = 0; i < utterances.length; i++) {
     const idx = firstIdx + i;
     if (!utteranceDomCache[idx]) {
@@ -1348,7 +1348,7 @@ async function finalizeText(text) {
   if (englishInterim) englishInterim.innerText = '';
   if (vietnameseInterim) vietnameseInterim.innerText = '';
   if (interimBlock) interimBlock.style.display = 'none';
-  shouldStickToBottom = true;
+  shouldStickToTop = true;
   autoScroll(true);
 
   // After translation, detect question and trigger AI suggest (non-blocking)
@@ -1378,14 +1378,14 @@ async function forceFinalizeText(text, rawLength) {
   await finalizeText(text);
 }
 
-// Live utterance helpers: the last feed item acts as the "live" block while speech
-// is in progress. It is finalized in place (no re-ordering, no layout jump).
+// Live utterance helpers: the first feed item (top) acts as the "live" block while speech
+// is in progress. It is finalized in place (no re-ordering, no layout jump). Newest on top.
 function ensureLiveUtterance() {
   const lastCache = utteranceDomCache[utteranceDomCache.length - 1];
   if (lastCache && lastCache.isLive) return lastCache;
-  // Capture stickiness before DOM grows (scrollHeight will increase)
-  const wasNear = isNearBottom();
-  if (wasNear) shouldStickToBottom = true;
+  // Capture stickiness before DOM grows (newest on top)
+  const wasNear = isNearTop();
+  if (wasNear) shouldStickToTop = true;
   // Create a fresh live slot with current speaker
   const idx = finalizedEnPhrases.length;
   finalizedEnPhrases.push('');
@@ -1670,9 +1670,9 @@ function buildUtteranceDom(idx, en, vi) {
   copyEn.addEventListener('click', () => handleCopy(copyEn));
   copyVi.addEventListener('click', () => handleCopy(copyVi));
 
-  // Insert into feed (before the interim block if present, so interim stays at bottom)
-  if (interimBlock && interimBlock.parentNode === transcriptFeed) {
-    transcriptFeed.insertBefore(root, interimBlock);
+  // Insert into feed — newest on top (prepend). Previously appended to bottom.
+  if (transcriptFeed.firstChild) {
+    transcriptFeed.insertBefore(root, transcriptFeed.firstChild);
   } else {
     transcriptFeed.appendChild(root);
   }
@@ -1683,7 +1683,7 @@ function buildUtteranceDom(idx, en, vi) {
   };
 }
 
-// Add a single utterance to the feed (new item at the end)
+// Add a single utterance to the feed (newest on top -> prepend)
 function appendUtterance(idx) {
   const en = finalizedEnPhrases[idx] || '';
   const vi = finalizedViPhrases[idx] !== undefined ? finalizedViPhrases[idx] : '…';
@@ -1762,17 +1762,21 @@ function setViText(el, vi) {
   }
 }
 
-// Smooth auto-scroll: sticky to bottom unless the user has scrolled up
+// Smooth auto-scroll: sticky to TOP (newest on top) unless the user has scrolled down
 // Optimized: instant for interim, smooth only for finalize; coalesced RAF
 let scrollScheduled = false;
 let pendingScrollForce = false;
 let pendingScrollBehavior = 'smooth';
-// Track whether the user wants sticky follow (true = near bottom or fresh session)
-let shouldStickToBottom = true;
+// Track whether the user wants sticky follow (true = near top or fresh session)
+let shouldStickToTop = true;
 
-function isNearBottom() {
+function isNearTop() {
   if (!transcriptContent) return true;
-  return (transcriptContent.scrollHeight - transcriptContent.scrollTop - transcriptContent.clientHeight) < 120;
+  return transcriptContent.scrollTop < 120;
+}
+function isNearBottom() {
+  // Deprecated alias: reversed layout uses isNearTop
+  return isNearTop();
 }
 function autoScroll(force = false, behavior = 'smooth') {
   if (force) {
@@ -1788,7 +1792,7 @@ function autoScroll(force = false, behavior = 'smooth') {
   const enabled = !!(autoScrollCheck && autoScrollCheck.checked);
   if (!enabled) return;
   if (!force) {
-    if (!shouldStickToBottom && !isNearBottom()) return;
+    if (!shouldStickToTop && !isNearTop()) return;
   }
   if (scrollScheduled) return;
   scrollScheduled = true;
@@ -1799,15 +1803,17 @@ function autoScroll(force = false, behavior = 'smooth') {
     pendingScrollForce = false;
     pendingScrollBehavior = 'smooth';
     if (!transcriptContent || !enabled) return;
-    if (mustForce || shouldStickToBottom || isNearBottom()) {
-      // use instant for interim typings to reduce layout thrashing
+    if (mustForce || shouldStickToTop || isNearTop()) {
+      // newest is on top -> scroll to top (0)
       transcriptContent.scrollTo({
-        top: transcriptContent.scrollHeight,
+        top: 0,
         behavior: beh
       });
     }
   });
 }
+// Backward compat: keep isNearBottom alias above; shouldStickToBottom now maps to shouldStickToTop
+// (all internal refs have been migrated to shouldStickToTop)
 
 function escapeHtml(str) {
   if (!str) return '';
