@@ -218,10 +218,12 @@ body {
 .copy-pill-all { border-color: rgba(16,185,129,0.20); }
 .copy-pill-all .pill-label { color: var(--success); }
 
-/* Panel content */
+/* Panel content - optimized: scroll-behavior auto (JS controls instant vs smooth), contain for paint */
 .panel-content {
   flex: 1; overflow-y: auto; min-height: 0; padding-right: 6px; font-size: 14.5px; line-height: 1.7; color: var(--text); word-break: break-word;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
+  contain: content;
+  content-visibility: auto;
 }
 .panel-content:focus-visible { outline: 2px solid rgba(99,102,241,0.4); outline-offset: -2px; border-radius: 8px; }
 
@@ -258,13 +260,13 @@ body {
 
 /* New: Single transcript feed - EN on top (white, left-border), VI below (yellow, left-border) */
 .transcript-feed { display: flex; flex-direction: column; gap: 12px; }
-/* Smooth scroll on the container to avoid jumping */
-#transcriptContent { scroll-behavior: smooth; }
+/* Perf: JS controls scroll, CSS auto avoids forced smooth on every interim */
+#transcriptContent { scroll-behavior: auto; contain: content; }
 
-/* Entry animation: slide in + fade with subtle scale */
+/* Entry animation: optimized - removed blur filter for GPU */
 @keyframes utteranceIn {
-  0% { opacity: 0; transform: translateY(-10px) scale(0.98); filter: blur(2px); }
-  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+  0% { opacity: 0; transform: translateY(-8px) scale(0.99); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 /* Live block (last utterance being spoken): stable, no transform animation to prevent jitter */
 .utterance.is-live {
@@ -301,14 +303,15 @@ body {
   100% { width: 100%; opacity: 1; }
 }
 
-/* Mockup-style utterance: no card, just left border line + stacked EN/VI like screenshot [Image 1] */
+/* Mockup-style utterance: optimized with contain */
 .utterance {
   background: transparent; border: none; border-radius: 0;
   border-left: 2px solid #2e2e2e;
   padding-left: 12px; margin-left: 2px;
-  animation: utteranceIn 0.32s var(--ease) forwards;
+  animation: utteranceIn 0.28s var(--ease) forwards;
   position: relative;
   will-change: transform, opacity;
+  contain: layout paint;
 }
 .utterance.speaker-0 { border-left-color: #2e2e2e; }
 .utterance.speaker-1 { border-left-color: #4f46e5; }

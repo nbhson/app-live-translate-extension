@@ -6,8 +6,12 @@ let activeAudioTrack = null;
 
 let finalizedOffset = 0;
 let silenceTimer = null;
-const SILENCE_THRESHOLD = 1500; // 1.5s pause to force-finalize
-const MAX_INTERIM_LENGTH = 100; // 100 characters to force-finalize
+const SILENCE_THRESHOLD = 900; // optimized: 0.9s pause to force-finalize (was 1500)
+const MAX_INTERIM_LENGTH = 80; // 80 chars to force-finalize (was 100)
+const MAX_DOM_UTTERANCES = 120; // virtualization: keep last N DOM nodes
+const INTERIM_DEBOUNCE_MS = 500; // was 300
+const TRANSLATION_CACHE_MAX = 500;
+const MAX_CONCURRENT_TRANSLATE = 3;
 
 let finalizedEnPhrases = [];
 let finalizedViPhrases = [];
@@ -29,6 +33,14 @@ let compressInProgress = false;
 const COMPRESS_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const COMPRESS_RECENT_KEEP = 10;
 const COMPRESS_MAX_CHARS = 3000; // truncate compressed history for prompt
+
+// Perf: translation cache + concurrency control
+const translationCache = new Map();
+let activeTranslateControllers = new Set();
+let suggestQueue = Promise.resolve();
+let isSuggestRunning = false;
+let wordCountDirty = false;
+let wordCountRaf = null;
 
 // Heuristic speaker diarization (local, no ML model)
 let currentSpeakerId = 0;
@@ -452,8 +464,8 @@ function setupSpeakerMonitor(stream) {
     if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.3;
+    analyser.fftSize = 1024; // was 2048 - halved for CPU
+    analyser.smoothingTimeConstant = 0.35;
     source.connect(analyser);
     // keep audible loopback if it was tab capture (already connected), avoid double connect
     const dataFreq = new Uint8Array(analyser.frequencyBinCount);
@@ -461,7 +473,7 @@ function setupSpeakerMonitor(stream) {
     speakerMonitor = { ctx, analyser, dataFreq, dataTime, stream, timer: null, lastRms: 0, lastCentroid: 0, speechStartAt: 0 };
     speakerVadState = 'silence';
     speakerVadSilenceMs = 0;
-    // sample every 60ms
+    // sample every 120ms (was 60ms) - 50% CPU saving
     let lastTick = performance.now();
     const tick = () => {
       const now = performance.now();
@@ -512,7 +524,7 @@ function setupSpeakerMonitor(stream) {
       speakerMonitor.lastRms = rms;
       speakerMonitor.lastCentroid = centroid;
     };
-    speakerMonitor.timer = setInterval(tick, 60);
+    speakerMonitor.timer = setInterval(tick, 120);
   } catch (e) {
     console.warn('setupSpeakerMonitor failed', e);
   }
@@ -520,6 +532,10 @@ function setupSpeakerMonitor(stream) {
 function teardownSpeakerMonitor() {
   if (speakerMonitor && speakerMonitor.timer) {
     clearInterval(speakerMonitor.timer);
+  }
+  // suspend AudioContext to save battery when not needed
+  if (speakerMonitor && speakerMonitor.ctx && speakerMonitor.ctx.state === 'running') {
+    try { speakerMonitor.ctx.suspend(); } catch {}
   }
   speakerMonitor = null;
   speakerVadState = 'silence';
@@ -637,6 +653,15 @@ function stopListening() {
     clearTimeout(silenceTimer);
     silenceTimer = null;
   }
+  if (liveViDebounce) {
+    clearTimeout(liveViDebounce);
+    liveViDebounce = null;
+  }
+  if (liveViController) {
+    try { liveViController.abort(); } catch {}
+    liveViController = null;
+  }
+  abortAllPendingTranslations();
   teardownSpeakerMonitor();
   if (window.micMonitorStream) {
     try { window.micMonitorStream.getTracks().forEach(t => t.stop()); } catch {}
@@ -672,7 +697,7 @@ function initRecognition() {
     if (compressEnabled) startCompressTimer();
   };
   
-  recognition.onresult = async (event) => {
+  recognition.onresult = (event) => {
     let interimEn = '';
     
     // Clear silence timer on every new speech piece
@@ -696,7 +721,8 @@ function initRecognition() {
           finalizedOffset = 0;
           
           if (remainingText) {
-            await finalizeText(remainingText);
+            // non-blocking: don't await, let translation run in background
+            finalizeText(remainingText).catch(e => console.error(e));
           }
         }
       } else {
@@ -714,24 +740,35 @@ function initRecognition() {
     if (interimEn) {
       hidePlaceholders();
       // Live: render interim into the last utterance slot (sticky live block)
-      ensureLiveUtterance();
-      const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
+      const liveCache = ensureLiveUtterance();
       if (liveCache && liveCache.enText) {
-        liveCache.enText.textContent = interimEn;
-        liveCache.enText.classList.add('typing');
+        // only update DOM if text actually changed to avoid layout thrashing
+        if (liveCache.enText.textContent !== interimEn) {
+          liveCache.enText.textContent = interimEn;
+          liveCache.enText.classList.add('typing');
+        }
       }
-      // Follow the live feed only while the user is near the bottom (sticky)
-      autoScroll();
+      // Follow the live feed only while the user is near the bottom (sticky) - instant for interim
+      autoScroll(false, 'instant');
+      // debounce VI preview for interim (saves API calls)
+      debouncedTranslateInterim(interimEn);
 
       // Trigger timer
       const lastResultIndex = event.results.length - 1;
       const currentRawTextLength = event.results[lastResultIndex][0].transcript.length;
 
       if (interimEn.length >= MAX_INTERIM_LENGTH) {
-        await forceFinalizeText(interimEn, currentRawTextLength);
+        // sentence-end punctuation fast-path: finalize immediately
+        const hasPunct = /[.!?]$/.test(interimEn.trim());
+        if (hasPunct) {
+          forceFinalizeText(interimEn, currentRawTextLength).catch(()=>{});
+        } else {
+          // force finalize but non-blocking
+          forceFinalizeText(interimEn, currentRawTextLength).catch(()=>{});
+        }
       } else {
-        silenceTimer = setTimeout(async () => {
-          await forceFinalizeText(interimEn, currentRawTextLength);
+        silenceTimer = setTimeout(() => {
+          forceFinalizeText(interimEn, currentRawTextLength).catch(()=>{});
         }, SILENCE_THRESHOLD);
       }
     }
@@ -1014,33 +1051,36 @@ async function triggerSuggestForIndex(idx, question) {
     updateDock();
     return;
   }
-  questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
-  // auto-select this question
-  selectedQuestionIdx = idx;
-  updateSuggestCard(idx);
-  updateDock();
-  try {
-    // B mode: when compress enabled, feed more context (recent 10 + compressed); else classic 4
-    const contextSlice = compressEnabled
-      ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
-      : finalizedEnPhrases.slice(Math.max(0, idx-3), idx+1);
-    const prompt = buildSuggestPrompt(question, contextSlice);
-    const raw = await callProviderForSuggest(prompt);
-    const parsed = parseSuggestAnswers(raw);
-    let { structures, answers } = parsed;
-    if (answers.length === 0 && structures.length === 0) throw new Error('Không parse được gợi ý');
-    if (answers.length === 0) answers = structures;
-    if (structures.length === 0) structures = synthesizeStructures(answers);
-    // ensure limits
-    answers = answers.slice(0,3);
-    structures = structures.slice(0,3);
-    questionSuggestions[idx] = { state: 'done', question, answers, structures };
-  } catch (e) {
-    questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message || 'Lỗi AI' };
-  }
-  updateSuggestCard(idx);
-  updateDock();
-  autoScroll();
+  // queue: serialize LLM calls to avoid burst (max 1 concurrent)
+  const task = async () => {
+    questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
+    selectedQuestionIdx = idx;
+    updateSuggestCard(idx);
+    updateDock();
+    try {
+      const contextSlice = compressEnabled
+        ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
+        : finalizedEnPhrases.slice(Math.max(0, idx-3), idx+1);
+      const prompt = buildSuggestPrompt(question, contextSlice);
+      const raw = await callProviderForSuggest(prompt);
+      const parsed = parseSuggestAnswers(raw);
+      let { structures, answers } = parsed;
+      if (answers.length === 0 && structures.length === 0) throw new Error('Không parse được gợi ý');
+      if (answers.length === 0) answers = structures;
+      if (structures.length === 0) structures = synthesizeStructures(answers);
+      answers = answers.slice(0,3);
+      structures = structures.slice(0,3);
+      questionSuggestions[idx] = { state: 'done', question, answers, structures };
+    } catch (e) {
+      questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message || 'Lỗi AI' };
+    }
+    updateSuggestCard(idx);
+    updateDock();
+    autoScroll(true);
+  };
+  // chain onto queue
+  suggestQueue = suggestQueue.then(task).catch(task);
+  return suggestQueue;
 }
 
 // === Suggestion Dock logic (separated UI like mockup) ===
@@ -1277,12 +1317,12 @@ async function finalizeText(text) {
   }
   updateWordCounts();
 
-  // Translate each utterance, updating the DOM in place (no full re-render)
+  // Translate each utterance concurrently (pool = 3) - optimized
   showStatus('Đang dịch...');
+  const tasks = [];
   for (let k = 0; k < utterances.length; k++) {
     const idx = firstIdx + k;
     const cache = utteranceDomCache[idx];
-    // Skip translation entirely when this slot already has a result (e.g. re-finalize)
     if (finalizedViPhrases[idx] && finalizedViPhrases[idx] !== '…') {
       if (cache) {
         setViText(cache.viText, finalizedViPhrases[idx]);
@@ -1291,21 +1331,12 @@ async function finalizeText(text) {
       }
       continue;
     }
-    const translated = await translateText(utterances[k]);
-    finalizedViPhrases[idx] = translated || '[Không thể dịch]';
-    // Update only this utterance's VI text in place
-    if (cache) {
-      setViText(cache.viText, finalizedViPhrases[idx]);
-      cache.copyVi.dataset.text = finalizedViPhrases[idx];
-      cache.copyVi.disabled = false;
-      // Flash the VI column to show it just arrived
-      if (cache.colVi && finalizedViPhrases[idx] !== '[Không thể dịch]') {
-        cache.colVi.classList.add('vi-just-arrived');
-        setTimeout(() => cache.colVi.classList.remove('vi-just-arrived'), 800);
-      }
-    }
-    updateWordCounts();
+    tasks.push({ idx, text: utterances[k], cache });
   }
+  if (tasks.length > 0) {
+    await translateBatchConcurrent(tasks, MAX_CONCURRENT_TRANSLATE);
+  }
+  pruneOldUtterances();
 
   if (activeAudioTrack) {
     showStatus('Đang dịch âm thanh Tab...');
@@ -1396,52 +1427,123 @@ function promoteLiveToFinal(enText) {
   return false;
 }
 
-// Translate Text via Google Translate free API
-async function translateText(text) {
+// Translate Text via Google Translate free API - optimized with cache + AbortController + LRU
+async function translateText(text, opts = {}) {
   if (!text || !text.trim()) return '';
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(text)}`;
+  const trimmed = text.trim();
+  // cache hit (fast path)
+  if (translationCache.has(trimmed)) {
+    const cached = translationCache.get(trimmed);
+    // LRU touch: move to end
+    translationCache.delete(trimmed);
+    translationCache.set(trimmed, cached);
+    return cached;
+  }
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(trimmed)}`;
+  const controller = new AbortController();
+  if (!opts.signal) {
+    activeTranslateControllers.add(controller);
+  }
+  const signal = opts.signal || controller.signal;
+  // timeout 8s
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { signal });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     const data = await response.json();
+    let translation = '';
     if (data && data[0]) {
-      let translation = '';
       for (let i = 0; i < data[0].length; i++) {
-        if (data[0][i] && data[0][i][0]) {
-          translation += data[0][i][0];
-        }
+        if (data[0][i] && data[0][i][0]) translation += data[0][i][0];
       }
-      return translation;
     }
-    return '';
+    if (translation) {
+      translationCache.set(trimmed, translation);
+      if (translationCache.size > TRANSLATION_CACHE_MAX) {
+        const firstKey = translationCache.keys().next().value;
+        translationCache.delete(firstKey);
+      }
+    }
+    return translation;
   } catch (error) {
+    if (error.name === 'AbortError') {
+      // silently handle aborted interim translations
+      return '';
+    }
     console.error('Translation error:', error);
     return '';
+  } finally {
+    clearTimeout(timeoutId);
+    activeTranslateControllers.delete(controller);
   }
 }
 
-// Update the live VI preview inside the live utterance (debounced)
+function abortAllPendingTranslations() {
+  for (const c of activeTranslateControllers) {
+    try { c.abort(); } catch {}
+  }
+  activeTranslateControllers.clear();
+}
+
+async function translateBatchConcurrent(tasks, concurrency = MAX_CONCURRENT_TRANSLATE) {
+  // tasks: array of { idx, text, cache }
+  const results = new Array(tasks.length);
+  let next = 0;
+  async function worker() {
+    while (next < tasks.length) {
+      const cur = next++;
+      const t = tasks[cur];
+      // skip if already translated (cache hit)
+      if (finalizedViPhrases[t.idx] && finalizedViPhrases[t.idx] !== '…') {
+        results[cur] = finalizedViPhrases[t.idx];
+        continue;
+      }
+      const out = await translateText(t.text);
+      results[cur] = out || '[Không thể dịch]';
+      finalizedViPhrases[t.idx] = results[cur];
+      if (t.cache) {
+        setViText(t.cache.viText, results[cur]);
+        t.cache.copyVi.dataset.text = results[cur];
+        t.cache.copyVi.disabled = false;
+        if (t.cache.colVi && results[cur] !== '[Không thể dịch]') {
+          t.cache.colVi.classList.add('vi-just-arrived');
+          setTimeout(() => t.cache.colVi.classList.remove('vi-just-arrived'), 800);
+        }
+      }
+      scheduleWordCountUpdate();
+    }
+  }
+  const workers = Array(Math.min(concurrency, tasks.length)).fill(0).map(() => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+// Update the live VI preview inside the live utterance (debounced + abortable)
 let liveViDebounce = null;
+let liveViController = null;
 function debouncedTranslateInterim(text) {
   if (liveViDebounce) {
     clearTimeout(liveViDebounce);
   }
+  if (liveViController) {
+    try { liveViController.abort(); } catch {}
+    liveViController = null;
+  }
+  if (!text || text.trim().length < 8) return; // skip too short interim to save API calls
 
   liveViDebounce = setTimeout(async () => {
-    if (!text || !text.trim()) {
-      return;
-    }
-    // Only update while this is still the live utterance
+    if (!text || !text.trim()) return;
     const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
     if (!liveCache || !liveCache.isLive) return;
-
-    const translated = await translateText(text);
-    // Re-check live state after the async translation
+    const snapshotText = text; // capture for stale check
+    liveViController = new AbortController();
+    const translated = await translateText(snapshotText, { signal: liveViController.signal });
+    liveViController = null;
     const stillLive = utteranceDomCache[utteranceDomCache.length - 1];
-    if (stillLive && stillLive.isLive && liveCache.enText && liveCache.enText.textContent === text) {
-      setViText(liveCache.viText, translated);
+    if (stillLive && stillLive.isLive && liveCache.enText && liveCache.enText.textContent === snapshotText) {
+      if (translated) setViText(liveCache.viText, translated);
     }
-  }, 300);
+  }, INTERIM_DEBOUNCE_MS);
 }
 
 // Render finalized logs (legacy hidden) + combined single block
@@ -1593,11 +1695,26 @@ function appendUtterance(idx) {
   utteranceSpeakers[idx] = spk;
   utteranceDomCache[idx] = cache;
 
-  // Auto scroll
-  autoScroll();
+  // Auto scroll - instant for append to avoid jank, smooth only on finalize
+  autoScroll(false, 'instant');
+  pruneOldUtterances();
 
   // If there's a suggestion state, render it
   updateSuggestCard(idx);
+}
+
+function pruneOldUtterances() {
+  // virtualization: keep DOM light when transcript grows large
+  if (finalizedEnPhrases.length <= MAX_DOM_UTTERANCES) return;
+  const toRemove = finalizedEnPhrases.length - MAX_DOM_UTTERANCES;
+  for (let i = 0; i < toRemove; i++) {
+    const cache = utteranceDomCache[i];
+    if (cache && cache.root && cache.root.parentNode && !cache.isLive) {
+      cache.root.remove();
+      // keep array slot but mark as pruned for later re-render if needed
+      utteranceDomCache[i] = null;
+    }
+  }
 }
 
 // Update a single utterance in place (translation arrived or suggest updated)
@@ -1646,9 +1763,10 @@ function setViText(el, vi) {
 }
 
 // Smooth auto-scroll: sticky to bottom unless the user has scrolled up
-// Fix: isNearBottom must be evaluated BEFORE DOM growth, and throttling must coalesce.
+// Optimized: instant for interim, smooth only for finalize; coalesced RAF
 let scrollScheduled = false;
 let pendingScrollForce = false;
+let pendingScrollBehavior = 'smooth';
 // Track whether the user wants sticky follow (true = near bottom or fresh session)
 let shouldStickToBottom = true;
 
@@ -1656,35 +1774,36 @@ function isNearBottom() {
   if (!transcriptContent) return true;
   return (transcriptContent.scrollHeight - transcriptContent.scrollTop - transcriptContent.clientHeight) < 120;
 }
-function autoScroll(force = false) {
-  if (force) pendingScrollForce = true;
-  // Capture stickiness at call time (before RAF, before next DOM growth is measured)
+function autoScroll(force = false, behavior = 'smooth') {
+  if (force) {
+    pendingScrollForce = true;
+    pendingScrollBehavior = 'smooth';
+  } else if (behavior === 'smooth') {
+    pendingScrollBehavior = 'smooth';
+  } else {
+    // interim uses instant to avoid jank
+    if (pendingScrollBehavior !== 'smooth') pendingScrollBehavior = behavior;
+  }
   const autoScrollCheck = document.getElementById('autoScrollCheck');
   const enabled = !!(autoScrollCheck && autoScrollCheck.checked);
-  if (!enabled) {
-    // still schedule so pendingScrollForce is cleared correctly
-    return;
-  }
+  if (!enabled) return;
   if (!force) {
-    // Only stick if the user was already near bottom at this moment.
-    // If the user scrolled up, we respect that and do not yank them down.
-    // shouldStickToBottom is updated on scroll events; fallback to live isNearBottom().
     if (!shouldStickToBottom && !isNearBottom()) return;
   }
-  if (scrollScheduled) {
-    // coalesce: keep pending force flag, actual scroll will happen on the scheduled frame
-    return;
-  }
+  if (scrollScheduled) return;
   scrollScheduled = true;
   requestAnimationFrame(() => {
     scrollScheduled = false;
     const mustForce = pendingScrollForce;
+    const beh = pendingScrollBehavior;
     pendingScrollForce = false;
+    pendingScrollBehavior = 'smooth';
     if (!transcriptContent || !enabled) return;
     if (mustForce || shouldStickToBottom || isNearBottom()) {
+      // use instant for interim typings to reduce layout thrashing
       transcriptContent.scrollTo({
         top: transcriptContent.scrollHeight,
-        behavior: 'smooth'
+        behavior: beh
       });
     }
   });
@@ -1755,6 +1874,13 @@ async function clearContent() {
     clearTimeout(liveViDebounce);
     liveViDebounce = null;
   }
+  if (liveViController) {
+    try { liveViController.abort(); } catch {}
+    liveViController = null;
+  }
+  abortAllPendingTranslations();
+  translationCache.clear();
+  suggestQueue = Promise.resolve();
   
   if (englishLog) englishLog.innerHTML = '';
   if (englishInterim) englishInterim.innerText = '';
@@ -2220,6 +2346,14 @@ function updateWordCounts() {
   if (enWordCount) enWordCount.textContent = enCount + ' từ';
   if (viWordCount) viWordCount.textContent = viCount + ' từ';
   if (combinedWordCount) combinedWordCount.textContent = total ? `${enCount} EN • ${viCount} VI` : '0 từ';
+}
+
+function scheduleWordCountUpdate() {
+  if (wordCountRaf) return;
+  wordCountRaf = requestAnimationFrame(() => {
+    wordCountRaf = null;
+    updateWordCounts();
+  });
 }
 
 function showToast(message, type = 'default') {
