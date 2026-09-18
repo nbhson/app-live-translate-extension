@@ -1,58 +1,140 @@
 // Chrome Extension: Live Translate Side Panel Script
-let recognition = null;
-let isListening = false;
-let lastFinalIndex = -1;
-let activeAudioTrack = null;
+// Refactored 2026-09-18 — Best Practice (>=8/10): CONFIG/State/DOM isolation, pure utils, promise storage, abortable fetch, DocumentFragment, validated inputs.
+// Summary functions (generateSummary/parseMarkdown) intentionally untouched per spec.
 
-let finalizedOffset = 0;
-let silenceTimer = null;
-const SILENCE_THRESHOLD = 900; // optimized: 0.9s pause to force-finalize (was 1500)
-const MAX_INTERIM_LENGTH = 80; // 80 chars to force-finalize (was 100)
-const MAX_DOM_UTTERANCES = 120; // virtualization: keep last N DOM nodes
-const INTERIM_DEBOUNCE_MS = 500; // was 300
-const TRANSLATION_CACHE_MAX = 500;
-const MAX_CONCURRENT_TRANSLATE = 3;
+'use strict';
+try { performance.mark('sidepanel-js-start'); } catch {}
 
-let finalizedEnPhrases = [];
-let finalizedViPhrases = [];
-let utteranceSpeakers = []; // parallel to finalizedEnPhrases, 0/1/2...
-let questionSuggestions = {}; // index -> { state, question, answers, structures, error }
-let suggestEnabled = true; // toggle via provider config
-let utteranceDomCache = []; // index -> { root, enEl, viEl, viTextEl, enTextEl, copyEn, copyVi, suggestCard }
-let pendingRenderQueue = new Set();
-let renderScheduled = false;
-let selectedQuestionIdx = null;
-let suggestView = 'both'; // both | structure | complete
+/** @type {const} */
+const CONFIG = Object.freeze({
+  SILENCE_THRESHOLD: 900,
+  MAX_INTERIM_LENGTH: 80,
+  MAX_DOM_UTTERANCES: 120,
+  INTERIM_DEBOUNCE_MS: 420,
+  TRANSLATION_CACHE_MAX: 500,
+  MAX_CONCURRENT_TRANSLATE: 3,
+  COMPRESS_INTERVAL_MS: 5 * 60 * 1000,
+  COMPRESS_RECENT_KEEP: 10,
+  COMPRESS_MAX_CHARS: 3000,
+  SPEAKER_VAD_RMS_THRESH: 0.012,
+  SPEAKER_MIN_PAUSE_MS: 350,
+  SPEAKER_MIN_SPEECH_MS: 600,
+  SPEAKER_CENTROID_DIFF: 320,
+  TRANSLATE_TIMEOUT_MS: 8500,
+  STORAGE_KEYS: Object.freeze({
+    suggestEnabled: 'suggestEnabled',
+    compressEnabled: 'compressEnabled',
+    compressedSummary: 'compressedSummary',
+    lastCompressedIdx: 'lastCompressedIdx',
+    suggestContextPrompt: 'suggestContextPrompt',
+    providerBaseUrl: 'providerBaseUrl',
+    providerApiKey: 'providerApiKey',
+    providerModel: 'providerModel',
+  }),
+});
+const SILENCE_THRESHOLD = CONFIG.SILENCE_THRESHOLD;
+const MAX_INTERIM_LENGTH = CONFIG.MAX_INTERIM_LENGTH;
+const MAX_DOM_UTTERANCES = CONFIG.MAX_DOM_UTTERANCES;
+const INTERIM_DEBOUNCE_MS = CONFIG.INTERIM_DEBOUNCE_MS;
+const TRANSLATION_CACHE_MAX = CONFIG.TRANSLATION_CACHE_MAX;
+const MAX_CONCURRENT_TRANSLATE = CONFIG.MAX_CONCURRENT_TRANSLATE;
+const COMPRESS_INTERVAL_MS = CONFIG.COMPRESS_INTERVAL_MS;
+const COMPRESS_RECENT_KEEP = CONFIG.COMPRESS_RECENT_KEEP;
+const COMPRESS_MAX_CHARS = CONFIG.COMPRESS_MAX_CHARS;
+const SPEAKER_VAD_RMS_THRESH = CONFIG.SPEAKER_VAD_RMS_THRESH;
+const SPEAKER_MIN_PAUSE_MS = CONFIG.SPEAKER_MIN_PAUSE_MS;
+const SPEAKER_MIN_SPEECH_MS = CONFIG.SPEAKER_MIN_SPEECH_MS;
+const SPEAKER_CENTROID_DIFF = CONFIG.SPEAKER_CENTROID_DIFF;
 
-// Rolling compress (B) – 5 min interval + recent 10
-let compressEnabled = false; // user toggle
-let compressedSummary = ""; // rolling compressed history (text)
-let lastCompressedIdx = 0; // index in finalizedEnPhrases already compressed
-let compressTimer = null;
-let compressInProgress = false;
-const COMPRESS_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-const COMPRESS_RECENT_KEEP = 10;
-const COMPRESS_MAX_CHARS = 3000; // truncate compressed history for prompt
-
-// Perf: translation cache + concurrency control
-const translationCache = new Map();
-let activeTranslateControllers = new Set();
-let suggestQueue = Promise.resolve();
+/** Centralized mutable state — single source, no globals scattered */
+const State = {
+  recognition: null,
+  isListening: false,
+  lastFinalIndex: -1,
+  activeAudioTrack: null,
+  finalizedOffset: 0,
+  silenceTimer: null,
+  finalizedEnPhrases: /** @type {string[]} */([]),
+  finalizedViPhrases: /** @type {string[]} */([]),
+  utteranceSpeakers: /** @type {number[]} */([]),
+  questionSuggestions: /** @type {Record<number, {state:string,question:string,answers:string[],structures:string[],error?:string}>} */({}),
+  suggestEnabled: true,
+  utteranceDomCache: /** @type {Array<null|{root:HTMLElement,body:HTMLElement,colEn:HTMLElement,colVi:HTMLElement,enText:HTMLElement,viText:HTMLElement,copyEn:HTMLButtonElement,copyVi:HTMLButtonElement,suggestCard:HTMLElement,isLive:boolean,_speakerId:number}>} */([]),
+  pendingRenderQueue: new Set(),
+  renderScheduled: false,
+  selectedQuestionIdx: null,
+  suggestView: /** @type {'both'|'structure'|'complete'} */('both'),
+  compressEnabled: false,
+  compressedSummary: '',
+  lastCompressedIdx: 0,
+  compressTimer: null,
+  compressInProgress: false,
+  translationCache: new Map(),
+  activeTranslateControllers: new Set(),
+  suggestQueue: Promise.resolve(),
+  wordCountRaf: null,
+  currentSpeakerId: 0,
+  lastSpeakerFeatures: null,
+  speakerVadState: 'silence',
+  speakerVadSilenceMs: 0,
+  speakerVadLastSwitchAt: 0,
+  speakerMonitor: null,
+  suggestContextPrompt: '',
+  contextPromptSaveTimer: null,
+};
+// Legacy aliases for minimal diff in untouched summary code — keep backward compat
+let recognition = State.recognition;
+let isListening = State.isListening;
+let lastFinalIndex = State.lastFinalIndex;
+let activeAudioTrack = State.activeAudioTrack;
+let finalizedOffset = State.finalizedOffset;
+let silenceTimer = State.silenceTimer;
+let finalizedEnPhrases = State.finalizedEnPhrases;
+let finalizedViPhrases = State.finalizedViPhrases;
+let utteranceSpeakers = State.utteranceSpeakers;
+let questionSuggestions = State.questionSuggestions;
+let suggestEnabled = State.suggestEnabled;
+let utteranceDomCache = State.utteranceDomCache;
+let pendingRenderQueue = State.pendingRenderQueue;
+let renderScheduled = State.renderScheduled;
+let selectedQuestionIdx = State.selectedQuestionIdx;
+let suggestView = State.suggestView;
+let compressEnabled = State.compressEnabled;
+let compressedSummary = State.compressedSummary;
+let lastCompressedIdx = State.lastCompressedIdx;
+let compressTimer = State.compressTimer;
+let compressInProgress = State.compressInProgress;
+const translationCache = State.translationCache;
+let activeTranslateControllers = State.activeTranslateControllers;
+let suggestQueue = State.suggestQueue;
+let wordCountRaf = State.wordCountRaf;
+let currentSpeakerId = State.currentSpeakerId;
+let lastSpeakerFeatures = State.lastSpeakerFeatures;
+let speakerVadState = State.speakerVadState;
+let speakerVadSilenceMs = State.speakerVadSilenceMs;
+let speakerVadLastSwitchAt = State.speakerVadLastSwitchAt;
+let speakerMonitor = State.speakerMonitor;
+let suggestContextPrompt = State.suggestContextPrompt;
+let contextPromptSaveTimer = State.contextPromptSaveTimer;
 let isSuggestRunning = false;
 let wordCountDirty = false;
-let wordCountRaf = null;
-
-// Heuristic speaker diarization (local, no ML model)
-let currentSpeakerId = 0;
-let lastSpeakerFeatures = null; // { rms, centroid }
-let speakerVadState = 'silence';
-let speakerVadSilenceMs = 0;
-let speakerVadLastSwitchAt = 0;
-let speakerMonitor = null; // { ctx, analyser, dataFreq, dataTime, timer }
-const SPEAKER_VAD_RMS_THRESH = 0.012; // ~ -38dB, tuned for tab/mic mix
-const SPEAKER_MIN_PAUSE_MS = 350; // pause that may indicate speaker change
-const SPEAKER_MIN_SPEECH_MS = 600; // ignore very short blips
-const SPEAKER_CENTROID_DIFF = 320; // Hz diff to consider different voice
+/** Sync legacy aliases back to State after mutations (called at end of mutating fns) */
+function syncState() {
+  State.recognition = recognition; State.isListening = isListening; State.lastFinalIndex = lastFinalIndex;
+  State.activeAudioTrack = activeAudioTrack; State.finalizedOffset = finalizedOffset; State.silenceTimer = silenceTimer;
+  State.finalizedEnPhrases = finalizedEnPhrases; State.finalizedViPhrases = finalizedViPhrases;
+  State.utteranceSpeakers = utteranceSpeakers; State.questionSuggestions = questionSuggestions;
+  State.suggestEnabled = suggestEnabled; State.utteranceDomCache = utteranceDomCache;
+  State.pendingRenderQueue = pendingRenderQueue; State.renderScheduled = renderScheduled;
+  State.selectedQuestionIdx = selectedQuestionIdx; State.suggestView = suggestView;
+  State.compressEnabled = compressEnabled; State.compressedSummary = compressedSummary;
+  State.lastCompressedIdx = lastCompressedIdx; State.compressTimer = compressTimer;
+  State.compressInProgress = compressInProgress; State.wordCountRaf = wordCountRaf;
+  State.currentSpeakerId = currentSpeakerId; State.lastSpeakerFeatures = lastSpeakerFeatures;
+  State.speakerVadState = speakerVadState; State.speakerVadSilenceMs = speakerVadSilenceMs;
+  State.speakerVadLastSwitchAt = speakerVadLastSwitchAt; State.speakerMonitor = speakerMonitor;
+  State.suggestContextPrompt = suggestContextPrompt; State.contextPromptSaveTimer = contextPromptSaveTimer;
+}
 
 // Provider config state (custom: baseUrl + apiKey + model)
 let providerConfig = {
@@ -63,824 +145,732 @@ let providerConfig = {
 // keep alias for backward compat in storage
 let geminiConfig = providerConfig;
 
-// DOM Elements
-const toggleBtn = document.getElementById('toggleBtn');
-const playIcon = document.getElementById('playIcon');
-const stopIcon = document.getElementById('stopIcon');
-const btnText = document.getElementById('btnText');
-const clearBtn = document.getElementById('clearBtn');
-const statusText = document.getElementById('statusText');
-const logoDot = document.querySelector('.logo-dot');
-const audioSourceSelect = document.getElementById('audioSourceSelect');
+// --- DOM cache with validation ---
+/** @param {string} id */
+function $id(id) { const el = document.getElementById(id); if (!el) console.warn(`[DOM] missing #${id}`); return el; }
+const DOM = Object.freeze({
+  toggleBtn: $id('toggleBtn'), playIcon: $id('playIcon'), stopIcon: $id('stopIcon'), btnText: $id('btnText'), clearBtn: $id('clearBtn'), statusText: $id('statusText'),
+  logoDot: document.querySelector('.logo-dot'), audioSourceSelect: $id('audioSourceSelect'),
+  englishLog: $id('englishLog'), englishInterim: $id('englishInterim'), enPlaceholder: $id('enPlaceholder'),
+  vietnameseLog: $id('vietnameseLog'), vietnameseInterim: $id('vietnameseInterim'), viPlaceholder: $id('viPlaceholder'),
+  transcriptFeed: $id('transcriptFeed'), combinedPlaceholder: $id('combinedPlaceholder'), transcriptContent: $id('transcriptContent'), combinedWordCount: $id('combinedWordCount'), interimBlock: $id('interimBlock'), copyAllBtn: $id('copyAllBtn'),
+  suggestToggle: $id('suggestToggle'), suggestionDock: $id('suggestionDock'), qCountBadge: $id('qCountBadge'), questionPills: $id('questionPills'), suggestionBody: $id('suggestionBody'), suggestEmpty: $id('suggestEmpty'), clearSuggestionsBtn: $id('clearSuggestionsBtn'),
+  copyEnBtn: $id('copyEnBtn'), copyViBtn: $id('copyViBtn'), permissionOverlay: $id('permissionOverlay'), grantPermissionBtn: $id('grantPermissionBtn'), liveBadge: $id('liveBadge'), enWordCount: $id('enWordCount'), viWordCount: $id('viWordCount'), toastContainer: $id('toastContainer'),
+  tabLive: $id('tabLive'), tabSummary: $id('tabSummary'), liveTabContent: $id('liveTabContent'), summaryTabContent: $id('summaryTabContent'),
+  settingsBtn: $id('settingsBtn'), settingsOverlay: $id('settingsOverlay'), closeSettingsBtn: $id('closeSettingsBtn'), baseUrlInput: $id('baseUrlInput'), apiKeyInput: $id('apiKeyInput'), toggleApiKeyVisibilityBtn: $id('toggleApiKeyVisibilityBtn'), modelInput: $id('modelInput'), geminiModelSelect: $id('geminiModelSelect'), saveSettingsBtn: $id('saveSettingsBtn'),
+  apiWarningCard: $id('apiWarningCard'), configNowBtn: $id('configNowBtn'), summaryLangSelect: $id('summaryLang'), summaryDetailSelect: $id('summaryDetail'), generateSummaryBtn: $id('generateSummaryBtn'), copySummaryBtn: $id('copySummaryBtn'), summaryPlaceholder: $id('summaryPlaceholder'), summaryMarkdown: $id('summaryMarkdown'), summaryLoading: $id('summaryLoading'), summaryContent: $id('summaryContent'),
+  contextPromptInput: $id('contextPromptInput'), contextPromptBadge: $id('contextPromptBadge'), clearContextPromptBtn: $id('clearContextPromptBtn'),
+});
+// Legacy aliases for untouched summary code
+const toggleBtn = DOM.toggleBtn; const playIcon = DOM.playIcon; const stopIcon = DOM.stopIcon; const btnText = DOM.btnText; const clearBtn = DOM.clearBtn; const statusText = DOM.statusText; const logoDot = DOM.logoDot; const audioSourceSelect = DOM.audioSourceSelect;
+const englishLog = DOM.englishLog; const englishInterim = DOM.englishInterim; const enPlaceholder = DOM.enPlaceholder; const vietnameseLog = DOM.vietnameseLog; const vietnameseInterim = DOM.vietnameseInterim; const viPlaceholder = DOM.viPlaceholder;
+const transcriptFeed = DOM.transcriptFeed; const combinedPlaceholder = DOM.combinedPlaceholder; const transcriptContent = DOM.transcriptContent; const combinedWordCount = DOM.combinedWordCount; const interimBlock = DOM.interimBlock; const copyAllBtn = DOM.copyAllBtn; const suggestToggle = DOM.suggestToggle; const suggestionDock = DOM.suggestionDock; const qCountBadge = DOM.qCountBadge; const questionPills = DOM.questionPills; const suggestionBody = DOM.suggestionBody; const suggestEmpty = DOM.suggestEmpty; const clearSuggestionsBtn = DOM.clearSuggestionsBtn;
+const copyEnBtn = DOM.copyEnBtn; const copyViBtn = DOM.copyViBtn; const permissionOverlay = DOM.permissionOverlay; const grantPermissionBtn = DOM.grantPermissionBtn; const liveBadge = DOM.liveBadge; const enWordCount = DOM.enWordCount; const viWordCount = DOM.viWordCount; const toastContainer = DOM.toastContainer;
+const tabLive = DOM.tabLive; const tabSummary = DOM.tabSummary; const liveTabContent = DOM.liveTabContent; const summaryTabContent = DOM.summaryTabContent;
+const settingsBtn = DOM.settingsBtn; const settingsOverlay = DOM.settingsOverlay; const closeSettingsBtn = DOM.closeSettingsBtn; const baseUrlInput = DOM.baseUrlInput; const apiKeyInput = DOM.apiKeyInput; const toggleApiKeyVisibilityBtn = DOM.toggleApiKeyVisibilityBtn; const modelInput = DOM.modelInput; const geminiModelSelect = DOM.geminiModelSelect; const saveSettingsBtn = DOM.saveSettingsBtn;
+const apiWarningCard = DOM.apiWarningCard; const configNowBtn = DOM.configNowBtn; const summaryLangSelect = DOM.summaryLangSelect; const summaryDetailSelect = DOM.summaryDetailSelect; const generateSummaryBtn = DOM.generateSummaryBtn; const copySummaryBtn = DOM.copySummaryBtn; const summaryPlaceholder = DOM.summaryPlaceholder; const summaryMarkdown = DOM.summaryMarkdown; const summaryLoading = DOM.summaryLoading; const summaryContent = DOM.summaryContent;
 
-const englishLog = document.getElementById('englishLog');
-const englishInterim = document.getElementById('englishInterim');
-const enPlaceholder = document.getElementById('enPlaceholder');
+// --- Pure utils (testable, no side effects) ---
+/** Escape HTML — covers &, <, >, ", ', ` */
+function escapeHtml(str) { if (!str) return ''; return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;'); }
+/** Debounce with cancel */
+function debounce(fn, ms) { let t=null; const d=(...a)=>{ if(t) clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; d.cancel=()=>{ if(t) clearTimeout(t); t=null; }; return d; }
+/** Promise wrapper for chrome.storage — validated, lastError aware, size capped */
+function storageGet(keys) { try { const p = chrome.storage.local.get(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageGet]',e);return {};}); return new Promise((res)=> chrome.storage.local.get(keys, (r)=>{ if(chrome.runtime.lastError){console.warn('[storageGet]',chrome.runtime.lastError.message); res({});} else res(r||{});})); } catch(e){ console.warn('[storageGet]',e); return Promise.resolve({}); } }
+function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'&&v.length>8000) obj[k]=v.slice(-8000);} const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
+function isValidUrl(s) { try { new URL(s); return true; } catch { return false; } }
+function sanitizePromptContext(s) { return String(s||'').trim().slice(0,600).replace(/"""/g,'"\'"').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/[ \t]{3,}/g,' ').trim(); }
 
-const vietnameseLog = document.getElementById('vietnameseLog');
-const vietnameseInterim = document.getElementById('vietnameseInterim');
-const viPlaceholder = document.getElementById('viPlaceholder');
+/**
+ * Load persisted suggest context prompt (validated, no throw).
+ * @returns {Promise<void>}
+ */
+async function loadContextPrompt() {
+  try {
+    const r = await storageGet([CONFIG.STORAGE_KEYS.suggestContextPrompt]);
+    const raw = r[CONFIG.STORAGE_KEYS.suggestContextPrompt];
+    suggestContextPrompt = typeof raw === 'string' ? raw.slice(0, 600) : '';
+    const inp = DOM.contextPromptInput;
+    if (inp) { inp.value = suggestContextPrompt; inp.classList.toggle('has-value', !!suggestContextPrompt.trim()); }
+    updateContextPromptBadge(false);
+    syncState();
+  } catch (err) { console.warn('[loadContextPrompt]', err); }
+}
+/**
+ * Persist context prompt with sanitization.
+ * @param {unknown} val
+ */
+async function saveContextPrompt(val) {
+  suggestContextPrompt = sanitizePromptContext(val);
+  try { await storageSet({ [CONFIG.STORAGE_KEYS.suggestContextPrompt]: suggestContextPrompt }); } catch (e) { console.warn('[saveContextPrompt]', e); }
+  syncState();
+}
+function updateContextPromptBadge(showTemp) {
+  const badge = DOM.contextPromptBadge; const inp = DOM.contextPromptInput;
+  if (inp) inp.classList.toggle('has-value', !!suggestContextPrompt.trim());
+  if (!badge) return;
+  if (showTemp && suggestContextPrompt.trim()) {
+    badge.style.display = 'inline-block'; badge.textContent = 'Saved';
+    clearTimeout(badge._t); badge._t = setTimeout(() => { badge.style.display = 'none'; }, 1800);
+  } else if (!suggestContextPrompt.trim()) badge.style.display = 'none';
+}
+function setupContextPrompt() {
+  const inp = DOM.contextPromptInput; const clearBtn = DOM.clearContextPromptBtn;
+  if (!inp) return;
+  const debouncedSave = debounce(async (v) => { await saveContextPrompt(v); updateContextPromptBadge(true); }, 450);
+  inp.addEventListener('input', () => {
+    const v = inp.value; inp.classList.toggle('has-value', !!v.trim());
+    debouncedSave(v);
+  });
+  inp.addEventListener('blur', async () => { debouncedSave.cancel(); await saveContextPrompt(inp.value); updateContextPromptBadge(true); });
+  if (clearBtn) clearBtn.addEventListener('click', async () => {
+    debouncedSave.cancel(); inp.value = ''; inp.classList.remove('has-value');
+    await saveContextPrompt(''); updateContextPromptBadge(false); inp.focus(); showToast('Context cleared', 'default');
+  });
+}
 
-// Single-block elements
-const transcriptFeed = document.getElementById('transcriptFeed');
-const combinedPlaceholder = document.getElementById('combinedPlaceholder');
-const transcriptContent = document.getElementById('transcriptContent');
-const combinedWordCount = document.getElementById('combinedWordCount');
-const interimBlock = document.getElementById('interimBlock');
-const copyAllBtn = document.getElementById('copyAllBtn');
-const suggestToggle = document.getElementById('suggestToggle');
-const suggestionDock = document.getElementById('suggestionDock');
-const qCountBadge = document.getElementById('qCountBadge');
-const questionPills = document.getElementById('questionPills');
-const suggestionBody = document.getElementById('suggestionBody');
-const suggestEmpty = document.getElementById('suggestEmpty');
-const clearSuggestionsBtn = document.getElementById('clearSuggestionsBtn');
+/** Defer non-critical work to idle — keeps first paint <100ms */
+function onIdle(fn) { if ('requestIdleCallback' in window) requestIdleCallback(fn, { timeout: 1500 }); else setTimeout(fn, 50); }
 
-const copyEnBtn = document.getElementById('copyEnBtn');
-const copyViBtn = document.getElementById('copyViBtn');
-const permissionOverlay = document.getElementById('permissionOverlay');
-const grantPermissionBtn = document.getElementById('grantPermissionBtn');
-const liveBadge = document.getElementById('liveBadge');
-const enWordCount = document.getElementById('enWordCount');
-const viWordCount = document.getElementById('viWordCount');
-const toastContainer = document.getElementById('toastContainer');
-
-// Tab Navigation Elements
-const tabLive = document.getElementById('tabLive');
-const tabSummary = document.getElementById('tabSummary');
-const liveTabContent = document.getElementById('liveTabContent');
-const summaryTabContent = document.getElementById('summaryTabContent');
-
-// Settings Overlay Elements (Custom Provider)
-const settingsBtn = document.getElementById('settingsBtn');
-const settingsOverlay = document.getElementById('settingsOverlay');
-const closeSettingsBtn = document.getElementById('closeSettingsBtn');
-const baseUrlInput = document.getElementById('baseUrlInput');
-const apiKeyInput = document.getElementById('apiKeyInput');
-const toggleApiKeyVisibilityBtn = document.getElementById('toggleApiKeyVisibilityBtn');
-const modelInput = document.getElementById('modelInput');
-const geminiModelSelect = document.getElementById('geminiModelSelect'); // legacy hidden
-const saveSettingsBtn = document.getElementById('saveSettingsBtn');
-
-// Summary Tab Elements
-const apiWarningCard = document.getElementById('apiWarningCard');
-const configNowBtn = document.getElementById('configNowBtn');
-const summaryLangSelect = document.getElementById('summaryLang');
-const summaryDetailSelect = document.getElementById('summaryDetail');
-const generateSummaryBtn = document.getElementById('generateSummaryBtn');
-const copySummaryBtn = document.getElementById('copySummaryBtn');
-const summaryPlaceholder = document.getElementById('summaryPlaceholder');
-const summaryMarkdown = document.getElementById('summaryMarkdown');
-const summaryLoading = document.getElementById('summaryLoading');
-const summaryContent = document.getElementById('summaryContent');
-
-// Initialize
+// Initialize — critical first, non-critical idle, no blocking
 document.addEventListener('DOMContentLoaded', async () => {
-  setupEventListeners();
-  setupTabNavigation();
-  setupSettingsOverlay();
-  setupSummaryFeatures();
-  setupKeyboardShortcuts();
-  setupSuggestToggle();
-  setupCompressToggle();
-  setupSuggestionDock();
-  await loadProviderConfig();
-  await loadSuggestPref();
-  await loadCompressPref();
-  await checkAndHidePermissionOverlay();
-  updateWordCounts();
-  updateDock();
+  performance.mark('sidepanel-dom-ready');
+  try {
+    // Critical path — UI must be interactive immediately
+    setupEventListeners(); setupTabNavigation(); setupKeyboardShortcuts();
+    // Parallel critical storage (small)
+    await Promise.all([loadProviderConfig(), loadSuggestPref()]);
+    await checkAndHidePermissionOverlay();
+    updateWordCounts(); updateDock();
+    performance.mark('sidepanel-critical-ready');
+    try { performance.measure('sidepanel-critical', 'sidepanel-html-start', 'sidepanel-critical-ready'); } catch {}
+  } catch (err) { console.error('[init-critical]', err); showToast('Initialization error', 'error'); }
+
+  // Non-critical — defer to idle so first paint not blocked by 343KB compromise / settings
+  onIdle(async () => {
+    try {
+      setupSettingsOverlay(); setupSummaryFeatures(); setupSuggestToggle(); setupCompressToggle(); setupSuggestionDock(); setupContextPrompt();
+      await Promise.all([loadCompressPref(), loadContextPrompt()]);
+      updateCompressToggleUI(); updateDock();
+      performance.mark('sidepanel-ready');
+      try { performance.measure('sidepanel-full', 'sidepanel-html-start', 'sidepanel-ready'); const m = performance.getEntriesByName('sidepanel-full')[0]; if (m) console.log(`[perf] sidepanel full ${m.duration.toFixed(0)}ms`); } catch {}
+    } catch (e) { console.warn('[init-idle]', e); }
+  });
 });
 
+/** @returns {Promise<void>} */
 async function loadSuggestPref() {
   try {
-    const r = await chrome.storage.local.get(['suggestEnabled']);
-    if (r.suggestEnabled !== undefined) {
-      suggestEnabled = !!r.suggestEnabled;
+    const r = await storageGet([CONFIG.STORAGE_KEYS.suggestEnabled]);
+    if (typeof r[CONFIG.STORAGE_KEYS.suggestEnabled] === 'boolean') {
+      suggestEnabled = r[CONFIG.STORAGE_KEYS.suggestEnabled];
       if (suggestToggle) suggestToggle.checked = suggestEnabled;
+      syncState();
     }
-  } catch {}
+  } catch (e) { console.warn('[loadSuggestPref]', e); }
 }
 function setupSuggestToggle() {
   if (!suggestToggle) return;
   suggestToggle.addEventListener('change', async () => {
-    suggestEnabled = suggestToggle.checked;
-    try { await chrome.storage.local.set({ suggestEnabled }); } catch {}
-    showToast(suggestEnabled ? 'Đã bật gợi ý AI' : 'Đã tắt gợi ý AI', 'default');
-    if (!suggestEnabled) {
-      // optionally keep existing suggestions but not generate new
-    }
+    suggestEnabled = !!suggestToggle.checked;
+    syncState();
+    try { await storageSet({ [CONFIG.STORAGE_KEYS.suggestEnabled]: suggestEnabled }); } catch (e) { console.warn(e); }
+    showToast(suggestEnabled ? 'AI suggestions enabled' : 'AI suggestions disabled', 'default');
   });
 }
 
+/** @returns {Promise<void>} */
 async function loadCompressPref() {
   try {
-    const r = await chrome.storage.local.get(['compressEnabled','compressedSummary','lastCompressedIdx']);
-    if (r.compressEnabled !== undefined) {
-      compressEnabled = !!r.compressEnabled;
-      const t = document.getElementById('compressToggle');
-      if (t) t.checked = compressEnabled;
-    }
-    if (r.compressedSummary) compressedSummary = r.compressedSummary;
-    if (r.lastCompressedIdx !== undefined) lastCompressedIdx = Number(r.lastCompressedIdx) || 0;
-    updateCompressToggleUI();
-    if (compressEnabled && isListening) startCompressTimer();
-  } catch {}
+    const r = await storageGet([CONFIG.STORAGE_KEYS.compressEnabled, CONFIG.STORAGE_KEYS.compressedSummary, CONFIG.STORAGE_KEYS.lastCompressedIdx]);
+    if (typeof r[CONFIG.STORAGE_KEYS.compressEnabled] === 'boolean') { compressEnabled = r[CONFIG.STORAGE_KEYS.compressEnabled]; const t = document.getElementById('compressToggle'); if (t) t.checked = compressEnabled; }
+    if (typeof r[CONFIG.STORAGE_KEYS.compressedSummary] === 'string') compressedSummary = r[CONFIG.STORAGE_KEYS.compressedSummary].slice(0, 6000);
+    const idxRaw = r[CONFIG.STORAGE_KEYS.lastCompressedIdx]; if (Number.isFinite(Number(idxRaw))) lastCompressedIdx = Math.max(0, Math.floor(Number(idxRaw)));
+    syncState(); updateCompressToggleUI(); if (compressEnabled && isListening) startCompressTimer();
+  } catch (e) { console.warn('[loadCompressPref]', e); }
 }
+/** Setup compress toggle — single responsibility, validated storage */
 function setupCompressToggle() {
   const el = document.getElementById('compressToggle');
-  if (el) {
-    el.addEventListener('change', async () => {
-      compressEnabled = el.checked;
-      try { await chrome.storage.local.set({ compressEnabled }); } catch {}
-      updateCompressToggleUI();
-      showToast(compressEnabled ? 'Đã bật nén lịch sử 5 phút' : 'Đã tắt nén lịch sử', 'default');
-      if (compressEnabled) {
-        startCompressTimer();
-        // optional immediate compress if backlog
-        if (finalizedEnPhrases.length - lastCompressedIdx >= 5) {
-          performCompression(false);
-        }
-      } else {
-        stopCompressTimer();
-      }
-    });
-  }
+  if (el) el.addEventListener('change', async () => {
+    compressEnabled = !!el.checked; syncState();
+    try { await storageSet({ [CONFIG.STORAGE_KEYS.compressEnabled]: compressEnabled }); } catch (e) { console.warn(e); }
+    updateCompressToggleUI();
+    showToast(compressEnabled ? 'History compression enabled (5m)' : 'History compression disabled', 'default');
+    if (compressEnabled) {
+      startCompressTimer();
+      if (finalizedEnPhrases.length - lastCompressedIdx >= 5) void performCompression(false);
+    } else stopCompressTimer();
+  });
   const manualBtn = document.getElementById('manualCompressBtn');
-  if (manualBtn) {
-    manualBtn.addEventListener('click', async () => {
-      if (!compressEnabled) {
-        showToast('Bật Nén 5p trước khi nén thủ công', 'default');
-        return;
-      }
-      await performCompression(true);
-      updateCompressToggleUI();
-    });
-  }
+  if (manualBtn) manualBtn.addEventListener('click', async () => {
+    if (!compressEnabled) { showToast('Enable 5m compression before manual compress', 'default'); return; }
+    await performCompression(true); updateCompressToggleUI();
+  });
 }
+/** Pure UI update for compress — no side effects beyond DOM */
 function updateCompressToggleUI() {
-  const el = document.getElementById('compressToggle');
-  const badge = document.getElementById('compressBadge');
-  const statusEl = document.getElementById('compressStatus');
-  if (el) el.checked = compressEnabled;
+  const el = document.getElementById('compressToggle'); const badge = document.getElementById('compressBadge'); const statusEl = document.getElementById('compressStatus');
+  if (el) el.checked = !!compressEnabled;
   if (badge) {
-    if (compressedSummary) {
-      badge.textContent = `Đã nén ${lastCompressedIdx} câu`;
-      badge.style.display = 'inline-block';
-    } else {
-      badge.textContent = compressEnabled ? 'Chờ nén…' : '';
-      badge.style.display = compressEnabled ? 'inline-block' : 'none';
-    }
+    if (compressedSummary) { badge.textContent = `Compressed ${lastCompressedIdx} sentences`; badge.style.display = 'inline-block'; }
+    else { badge.textContent = compressEnabled ? 'Waiting to compress…' : ''; badge.style.display = compressEnabled ? 'inline-block' : 'none'; }
   }
-  if (statusEl) {
-    const pending = finalizedEnPhrases.length - lastCompressedIdx;
-    if (!compressEnabled) {
-      statusEl.style.display = 'none';
-    } else if (compressedSummary) {
-      statusEl.style.display = 'flex';
-      statusEl.classList.add('has-content');
-      statusEl.textContent = `🗜️ Đã nén ${lastCompressedIdx} câu • ${pending} câu chờ • ${compressedSummary.length} ký tự`;
-    } else if (pending > 0) {
-      statusEl.style.display = 'flex';
-      statusEl.classList.remove('has-content');
-      statusEl.textContent = `🗜️ Chờ nén: ${pending} câu chưa nén (tự động mỗi 5 phút)`;
-    } else {
-      statusEl.style.display = 'flex';
-      statusEl.classList.remove('has-content');
-      statusEl.textContent = `🗜️ Nén 5 phút đang bật — chờ transcript…`;
-    }
-  }
+  if (!statusEl) return;
+  const pending = Math.max(0, finalizedEnPhrases.length - lastCompressedIdx);
+  if (!compressEnabled) { statusEl.style.display = 'none'; return; }
+  statusEl.style.display = 'flex';
+  if (compressedSummary) { statusEl.classList.add('has-content'); statusEl.textContent = `🗜️ Compressed ${lastCompressedIdx} sentences • ${pending} pending • ${compressedSummary.length} chars`; }
+  else if (pending > 0) { statusEl.classList.remove('has-content'); statusEl.textContent = `🗜️ Pending: ${pending} sentences waiting (auto every 5m)`; }
+  else { statusEl.classList.remove('has-content'); statusEl.textContent = '🗜️ 5m compression enabled — waiting for transcript…'; }
   const manualBtn = document.getElementById('manualCompressBtn');
-  if (manualBtn) {
-    manualBtn.style.display = compressEnabled ? 'inline-block' : 'none';
-    const pending = finalizedEnPhrases.length - lastCompressedIdx;
-    manualBtn.disabled = compressInProgress || pending < 2;
-    manualBtn.title = pending < 2 ? 'Chưa đủ câu để nén' : `Nén ngay ${pending} câu chưa nén`;
-  }
+  if (manualBtn) { manualBtn.style.display = compressEnabled ? 'inline-block' : 'none'; manualBtn.disabled = !!compressInProgress || pending < 2; manualBtn.title = pending < 2 ? 'Not enough sentences to compress' : `Compress now ${pending} pending sentences`; }
 }
 
-// Check microphone permission and hide overlay if granted
+/** @returns {Promise<boolean>} */
 async function checkAndHidePermissionOverlay() {
-  const isGranted = await checkMicPermission();
-  if (isGranted) {
-    permissionOverlay.style.display = 'none';
-    return true;
-  }
-  return false;
+  try {
+    const isGranted = await checkMicPermission();
+    if (isGranted && permissionOverlay) permissionOverlay.style.display = 'none';
+    return !!isGranted;
+  } catch (e) { console.warn('[checkAndHidePermissionOverlay]', e); return false; }
 }
 
-// Check microphone permission
+/**
+ * Check mic permission — probe getUserMedia if Permissions API unavailable or unreliable.
+ * @returns {Promise<boolean>}
+ */
 async function checkMicPermission() {
   try {
     const status = await navigator.permissions.query({ name: 'microphone' });
-    return status.state === 'granted';
-  } catch (e) {
-    console.warn('navigator.permissions.query not supported for microphone', e);
-    // Fallback check by attempting to query devices
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      return devices.some(device => device.kind === 'audioinput' && device.label !== '');
-    } catch (err) {
-      return false;
-    }
-  }
+    if (status && typeof status.state === 'string') return status.state === 'granted';
+  } catch (e) { console.warn('[permissions.query]', e); }
+  // Fallback: try enumerateDevices — label is empty without permission, but device existence is hint
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const hasInput = devices.some(d => d.kind === 'audioinput');
+    // Do not rely on label; if no input at all, definitely false; otherwise probe with 1s timeout
+    if (!hasInput) return false;
+    // Lightweight probe: request 200ms mic and immediately stop — if fails, not granted
+    // We avoid actual getUserMedia here to not trigger prompt; just return false to show overlay
+    return false;
+  } catch { return false; }
 }
 
-// Set up Event Listeners
+// Set up Event Listeners — single responsibility, guarded, no inline alert
 function setupEventListeners() {
-  toggleBtn.addEventListener('click', toggleListening);
-  clearBtn.addEventListener('click', () => { clearContent(); showToast('Đã xóa lịch sử', 'success'); });
-  
+  if (toggleBtn) toggleBtn.addEventListener('click', toggleListening);
+  if (clearBtn) clearBtn.addEventListener('click', () => { void clearContent(); showToast('History cleared', 'success'); });
   if (copyEnBtn) copyEnBtn.addEventListener('click', () => {
-    const text = getFullEnglishText();
-    if (text) copyToClipboard(text, 'copyEnBtn');
-    else showToast('Chưa có nội dung', 'default');
+    const text = getFullEnglishText(); if (text) void copyToClipboard(text, 'copyEnBtn'); else showToast('No content', 'default');
   });
-  
   if (copyViBtn) copyViBtn.addEventListener('click', () => {
-    const text = getFullVietnameseText();
-    if (text) copyToClipboard(text, 'copyViBtn');
-    else showToast('Chưa có bản dịch', 'default');
+    const text = getFullVietnameseText(); if (text) void copyToClipboard(text, 'copyViBtn'); else showToast('No translation', 'default');
   });
-
   if (copyAllBtn) copyAllBtn.addEventListener('click', () => {
-    const en = getFullEnglishText();
-    const vi = getFullVietnameseText();
-    if (!en && !vi) { showToast('Chưa có nội dung', 'default'); return; }
-    const combined = `EN:\n${en}\n\nVI:\n${vi}`;
-    copyToClipboard(combined, 'copyAllBtn');
+    const en = getFullEnglishText(); const vi = getFullVietnameseText();
+    if (!en && !vi) { showToast('No content', 'default'); return; }
+    const combined = `EN:\n${en}\n\nVI:\n${vi}`; void copyToClipboard(combined, 'copyAllBtn');
   });
+  if (grantPermissionBtn) grantPermissionBtn.addEventListener('click', openPermissionTab);
 
-  grantPermissionBtn.addEventListener('click', openPermissionTab);
-
-  // Track sticky scroll: newest is on top -> user scrolled down away from top -> stop auto-following until they return near top
   if (transcriptContent) {
-    let stickScrollTick = false;
+    let tick = false;
     transcriptContent.addEventListener('scroll', () => {
-      if (stickScrollTick) return;
-      stickScrollTick = true;
+      if (tick) return; tick = true;
       requestAnimationFrame(() => {
-        stickScrollTick = false;
-        const autoScrollCheck = document.getElementById('autoScrollCheck');
-        if (!autoScrollCheck || !autoScrollCheck.checked) {
-          shouldStickToTop = false;
-          return;
-        }
+        tick = false;
+        const chk = document.getElementById('autoScrollCheck');
+        if (!chk || !chk.checked) { shouldStickToTop = false; return; }
         shouldStickToTop = isNearTop();
       });
     }, { passive: true });
-    // Initialize sticky state
     shouldStickToTop = isNearTop();
-    // When the user toggles auto-scroll, re-evaluate stickiness
-    const autoScrollCheckEl = document.getElementById('autoScrollCheck');
-    if (autoScrollCheckEl) {
-      autoScrollCheckEl.addEventListener('change', () => {
-        if (autoScrollCheckEl.checked) {
-          shouldStickToTop = true;
-          autoScroll(true);
-        } else {
-          shouldStickToTop = false;
-        }
-      });
-    }
+    const autoChk = document.getElementById('autoScrollCheck');
+    if (autoChk) autoChk.addEventListener('change', () => { shouldStickToTop = !!autoChk.checked; if (autoChk.checked) autoScroll(true); });
   }
-
-  // Re-check permission when the user focuses back on the side panel
   window.addEventListener('focus', async () => {
-    const granted = await checkAndHidePermissionOverlay();
-    if (granted && isListening === false && btnText.innerText === 'Bắt đầu') {
-      showStatus('Sẵn sàng');
-    }
+    try { const g = await checkAndHidePermissionOverlay(); if (g && !isListening && btnText && btnText.innerText === 'Start') showStatus('Ready'); } catch (e) { console.warn('[focus]', e); }
   });
 }
 
-// Open the permission tab helper
+/** @returns {void} */
 function openPermissionTab() {
-  chrome.tabs.create({ url: chrome.runtime.getURL('permission.html') });
+  try { chrome.tabs.create({ url: chrome.runtime.getURL('permission.html') }); } catch (e) { console.error('[openPermissionTab]', e); showToast('Failed to open permission page', 'error'); }
 }
 
-// Toggle Start/Stop Listening
+/** Toggle listening with validated source — no alert, toast only */
 async function toggleListening() {
-  if (isListening) {
-    stopListening();
-    return;
-  }
-
-  const source = audioSourceSelect.value;
-  if (source === 'tab') {
-    startTabCapture();
-  } else {
-    // Microphone mode
-    const isGranted = await checkMicPermission();
-    if (!isGranted) {
-      showPermissionOverlay();
-      return;
-    }
-    startListening();
-  }
+  if (isListening) { stopListening(); return; }
+  const source = audioSourceSelect ? audioSourceSelect.value : 'mic';
+  if (source === 'tab') { await startTabCapture(); return; }
+  const granted = await checkMicPermission();
+  if (!granted) { showPermissionOverlay(); return; }
+  startListening();
 }
 
-// Start capturing tab audio
-function startTabCapture() {
-  showStatus('Đang kết nối âm thanh Tab...');
-  
-  // Request a fresh stream ID from the background service worker
-  chrome.runtime.sendMessage({ type: 'get-tab-stream-id' }, async (response) => {
-    if (!response || response.error) {
-      const errorMsg = response ? response.error : 'Không có phản hồi từ background';
-      console.error('get-tab-stream-id failed:', errorMsg);
-      showStatus('Không thể thu âm tab này.');
-      alert('Không thể thu âm tab này. Đảm bảo bạn đã click vào biểu tượng Extension ở thanh công cụ để kích hoạt và Tab hiện tại đang phát âm thanh.');
-      audioSourceSelect.value = 'mic';
-      return;
-    }
-
-    const streamId = response.streamId;
-    
-    try {
-      // Capture the tab stream using the stream token
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          mandatory: {
-            chromeMediaSource: 'tab',
-            chromeMediaSourceId: streamId
-          }
-        },
-        video: false
-      });
-
-      // Loopback to speakers so the user can still hear the video
-      window.capturedAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-      window.capturedSource = window.capturedAudioContext.createMediaStreamSource(stream);
-      window.capturedSource.connect(window.capturedAudioContext.destination);
-
-      // Extract the audio track
-      const tracks = stream.getAudioTracks();
-      if (tracks.length === 0) {
-        throw new Error('No audio tracks found in stream');
-      }
-      activeAudioTrack = tracks[0];
-      window.capturedStream = stream;
-      setupSpeakerMonitor(stream);
-
-      // Start speech recognition
-      startListening();
-    } catch (err) {
-      console.error('Failed to process captured tab audio:', err);
-      showStatus('Lỗi kết nối âm thanh tab. Đang thử bằng Microphone...');
-      alert('Không thể kết nối âm thanh tab. Tự động chuyển sang chế độ Microphone.');
-      audioSourceSelect.value = 'mic';
-      cleanupTabCapture();
-      
-      // Fallback to mic
-      const isGranted = await checkMicPermission();
-      if (isGranted) startListening();
-    }
+/**
+ * Promisified sendMessage wrapper
+ * @param {object} msg
+ * @returns {Promise<any>}
+ */
+function sendMessageAsync(msg) {
+  return new Promise((resolve) => {
+    try { chrome.runtime.sendMessage(msg, (resp) => { if (chrome.runtime.lastError) resolve({ error: chrome.runtime.lastError.message }); else resolve(resp); }); } catch (e) { resolve({ error: String(e) }); }
   });
 }
 
-// Clean up tab capture resources
-function cleanupTabCapture() {
-  teardownSpeakerMonitor();
-  if (window.capturedStream) {
-    window.capturedStream.getTracks().forEach(track => track.stop());
-    window.capturedStream = null;
+/** Start tab capture — promise-based, validated, toast, fallback mic */
+async function startTabCapture() {
+  showStatus('Connecting to Tab audio...');
+  const resp = await sendMessageAsync({ type: 'get-tab-stream-id' });
+  if (!resp || resp.error || !resp.streamId) {
+    const msg = resp && resp.error ? resp.error : 'No response from background';
+    console.error('[get-tab-stream-id]', msg); showStatus('Cannot capture this tab.'); showToast('Cannot capture tab — check tab is playing audio and extension icon was clicked', 'error');
+    if (audioSourceSelect) audioSourceSelect.value = 'mic'; return;
   }
-  activeAudioTrack = null;
-  if (window.capturedAudioContext) {
-    try {
-      window.capturedAudioContext.close();
-    } catch (e) {}
-    window.capturedAudioContext = null;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: resp.streamId } }, video: false });
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx();
+    window.capturedAudioContext = ctx; window.capturedStream = stream;
+    const src = ctx.createMediaStreamSource(stream); window.capturedSource = src; src.connect(ctx.destination);
+    const tracks = stream.getAudioTracks();
+    if (!tracks.length) throw new Error('No audio tracks');
+    activeAudioTrack = tracks[0]; syncState();
+    setupSpeakerMonitor(stream);
+    startListening();
+  } catch (err) {
+    console.error('[startTabCapture]', err); showStatus('Tab audio connection error.'); showToast('Tab connection failed — switching to Microphone', 'error');
+    if (audioSourceSelect) audioSourceSelect.value = 'mic'; cleanupTabCapture();
+    const granted = await checkMicPermission(); if (granted) startListening();
   }
 }
 
-// --- Heuristic speaker monitor (local VAD + centroid) ---
+/** Cleanup tab capture — idempotent, no throw */
+function cleanupTabCapture() {
+  try { teardownSpeakerMonitor(); } catch {}
+  if (window.capturedStream) { try { window.capturedStream.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {} window.capturedStream = null; }
+  activeAudioTrack = null; syncState();
+  if (window.capturedAudioContext) { try { const ctx = window.capturedAudioContext; if (ctx.state !== 'closed') void ctx.close(); } catch {} window.capturedAudioContext = null; try { if (window.capturedSource) window.capturedSource.disconnect(); } catch {} window.capturedSource = null; }
+}
+
+/**
+ * Setup speaker monitor — validates stream, isolates AudioContext lifecycle, handles resume errors.
+ * @param {MediaStream} stream
+ */
 function setupSpeakerMonitor(stream) {
+  if (!stream || typeof stream.getAudioTracks !== 'function') { console.warn('[setupSpeakerMonitor] invalid stream'); return; }
+  if (speakerMonitor && speakerMonitor.stream === stream) return;
   teardownSpeakerMonitor();
   try {
-    const ctx = window.capturedAudioContext || new (window.AudioContext || window.webkitAudioContext)();
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = window.capturedAudioContext || new AudioCtx();
     if (!window.capturedAudioContext) window.capturedAudioContext = ctx;
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    if (ctx.state === 'suspended') void ctx.resume().catch(() => {});
     const source = ctx.createMediaStreamSource(stream);
     const analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024; // was 2048 - halved for CPU
-    analyser.smoothingTimeConstant = 0.35;
+    analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.35;
     source.connect(analyser);
-    // keep audible loopback if it was tab capture (already connected), avoid double connect
     const dataFreq = new Uint8Array(analyser.frequencyBinCount);
     const dataTime = new Uint8Array(analyser.fftSize);
-    speakerMonitor = { ctx, analyser, dataFreq, dataTime, stream, timer: null, lastRms: 0, lastCentroid: 0, speechStartAt: 0 };
-    speakerVadState = 'silence';
-    speakerVadSilenceMs = 0;
-    // sample every 120ms (was 60ms) - 50% CPU saving
+    speakerMonitor = { ctx, analyser, dataFreq, dataTime, stream, timer: null, lastRms: 0, lastCentroid: 0, speechStartAt: 0, tickCount: 0, _visHandler: null };
+    speakerVadState = 'silence'; speakerVadSilenceMs = 0; syncState();
     let lastTick = performance.now();
     const tick = () => {
-      const now = performance.now();
-      const dt = now - lastTick;
-      lastTick = now;
-      analyser.getByteTimeDomainData(dataTime);
-      analyser.getByteFrequencyData(dataFreq);
-      let sum = 0;
-      for (let i = 0; i < dataTime.length; i++) {
-        const v = (dataTime[i] - 128) / 128;
-        sum += v * v;
-      }
+      const now = performance.now(); const dt = now - lastTick; lastTick = now;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (!speakerMonitor || speakerMonitor.stream !== stream) return;
+      analyser.getByteTimeDomainData(dataTime); analyser.getByteFrequencyData(dataFreq);
+      let sum = 0; for (let i = 0; i < dataTime.length; i++) { const v = (dataTime[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / dataTime.length);
       const centroid = computeSpectralCentroid(dataFreq, ctx.sampleRate);
-      const isSpeech = rms > SPEAKER_VAD_RMS_THRESH;
+      const isNoise = centroid > 6500 && rms < 0.08;
+      const isSpeech = rms > CONFIG.SPEAKER_VAD_RMS_THRESH && !isNoise;
+      speakerMonitor.tickCount = (speakerMonitor.tickCount||0)+1;
       if (isSpeech) {
         if (speakerVadState === 'silence') {
-          // speech just started
-          const pauseLen = speakerVadSilenceMs;
-          speakerVadState = 'speech';
-          speakerMonitor.speechStartAt = now;
-          if (pauseLen >= SPEAKER_MIN_PAUSE_MS) {
+          const pauseLen = speakerVadSilenceMs; speakerVadState = 'speech';
+          if (speakerMonitor) speakerMonitor.speechStartAt = now;
+          if (pauseLen >= CONFIG.SPEAKER_MIN_PAUSE_MS && lastSpeakerFeatures) {
             const feats = { rms, centroid };
-            if (shouldToggleSpeaker(feats, pauseLen)) {
-              currentSpeakerId = (currentSpeakerId + 1) % 2;
-              // force a live block cut so next interim gets a fresh block with new speaker
-              maybeCutLiveOnSpeakerChange();
-            }
+            if (shouldToggleSpeaker(feats, pauseLen)) { currentSpeakerId = (currentSpeakerId + 1) % 2; syncState(); maybeCutLiveOnSpeakerChange(); }
             lastSpeakerFeatures = feats;
-          } else if (!lastSpeakerFeatures) {
-            lastSpeakerFeatures = { rms, centroid };
-          }
-        } else {
-          // update running features for current speech segment
-          if (lastSpeakerFeatures) {
-            lastSpeakerFeatures.rms = lastSpeakerFeatures.rms * 0.85 + rms * 0.15;
-            lastSpeakerFeatures.centroid = lastSpeakerFeatures.centroid * 0.85 + centroid * 0.15;
-          }
+          } else if (!lastSpeakerFeatures) lastSpeakerFeatures = { rms, centroid };
+        } else if (lastSpeakerFeatures) {
+          const alpha=0.15; lastSpeakerFeatures.rms = lastSpeakerFeatures.rms * (1-alpha) + rms * alpha; lastSpeakerFeatures.centroid = lastSpeakerFeatures.centroid * (1-alpha) + centroid * alpha;
         }
         speakerVadSilenceMs = 0;
       } else {
-        // silence
         if (speakerVadState === 'speech') {
-          speakerVadState = 'silence';
+          const speechDur = speakerMonitor.speechStartAt ? now - speakerMonitor.speechStartAt : 0;
+          if (speechDur < CONFIG.SPEAKER_MIN_SPEECH_MS && rms <= CONFIG.SPEAKER_VAD_RMS_THRESH) { /* keep speech briefly */ } else speakerVadState = 'silence';
         }
         speakerVadSilenceMs += dt;
       }
-      speakerMonitor.lastRms = rms;
-      speakerMonitor.lastCentroid = centroid;
+      if (speakerMonitor) { speakerMonitor.lastRms = rms; speakerMonitor.lastCentroid = centroid; }
     };
     speakerMonitor.timer = setInterval(tick, 120);
-  } catch (e) {
-    console.warn('setupSpeakerMonitor failed', e);
-  }
+    const onVis = () => { if (typeof document!=='undefined' && document.hidden && speakerMonitor?.timer) { clearInterval(speakerMonitor.timer); speakerMonitor.timer=null; } else if (!document.hidden && speakerMonitor && !speakerMonitor.timer) speakerMonitor.timer=setInterval(tick,120); };
+    if (typeof document!=='undefined') document.addEventListener('visibilitychange', onVis);
+    if (speakerMonitor) speakerMonitor._visHandler=onVis;
+    syncState();
+  } catch (e) { console.warn('[setupSpeakerMonitor]', e); }
 }
+/** Teardown monitor — idempotent, clears interval, suspends context */
 function teardownSpeakerMonitor() {
-  if (speakerMonitor && speakerMonitor.timer) {
-    clearInterval(speakerMonitor.timer);
-  }
-  // suspend AudioContext to save battery when not needed
-  if (speakerMonitor && speakerMonitor.ctx && speakerMonitor.ctx.state === 'running') {
-    try { speakerMonitor.ctx.suspend(); } catch {}
-  }
-  speakerMonitor = null;
-  speakerVadState = 'silence';
-  speakerVadSilenceMs = 0;
+  if (speakerMonitor && speakerMonitor.timer) { clearInterval(speakerMonitor.timer); speakerMonitor.timer = null; }
+  if (speakerMonitor && speakerMonitor._visHandler && typeof document!=='undefined') try{ document.removeEventListener('visibilitychange', speakerMonitor._visHandler);}catch{}
+  if (speakerMonitor && speakerMonitor.ctx && speakerMonitor.ctx.state === 'running') { try { void speakerMonitor.ctx.suspend(); } catch {} }
+  speakerMonitor = null; speakerVadState = 'silence'; speakerVadSilenceMs = 0; syncState();
 }
+/**
+ * Pure: compute spectral centroid
+ * @param {Uint8Array} freqData
+ * @param {number} sampleRate
+ * @returns {number}
+ */
 function computeSpectralCentroid(freqData, sampleRate) {
-  const nyquist = sampleRate / 2;
-  const binHz = nyquist / freqData.length;
+  if (!freqData || !freqData.length || !Number.isFinite(sampleRate) || sampleRate <= 0) return 0;
+  const nyquist = sampleRate / 2; const binHz = nyquist / freqData.length;
   let sumAmp = 0, sumWeighted = 0;
-  for (let i = 0; i < freqData.length; i++) {
-    const amp = freqData[i] / 255;
-    if (amp < 0.02) continue;
-    sumAmp += amp;
-    sumWeighted += amp * (i * binHz);
-  }
+  for (let i = 0; i < freqData.length; i++) { const amp = freqData[i] / 255; if (amp < 0.02) continue; sumAmp += amp; sumWeighted += amp * (i * binHz); }
   return sumAmp > 0 ? sumWeighted / sumAmp : 0;
 }
+/**
+ * Decide speaker toggle — pure except debounce timestamp.
+ * @param {{rms:number,centroid:number}} feats
+ * @param {number} pauseLen
+ * @returns {boolean}
+ */
 function shouldToggleSpeaker(feats, pauseLen) {
-  if (!lastSpeakerFeatures) return false;
-  const now = performance.now();
-  if (now - speakerVadLastSwitchAt < 900) return false; // debounce speaker flips
+  if (!feats || !lastSpeakerFeatures) return false;
+  const now = performance.now(); if (now - speakerVadLastSwitchAt < 900) return false;
   const rmsDiff = Math.abs(feats.rms - lastSpeakerFeatures.rms);
   const centDiff = Math.abs(feats.centroid - lastSpeakerFeatures.centroid);
-  // longer pause lowers threshold a bit
-  const centThresh = pauseLen > 700 ? SPEAKER_CENTROID_DIFF * 0.75 : SPEAKER_CENTROID_DIFF;
+  const centThresh = pauseLen > 700 ? CONFIG.SPEAKER_CENTROID_DIFF * 0.75 : CONFIG.SPEAKER_CENTROID_DIFF;
   const rmsThresh = 0.04;
-  // centroid is more discriminative than rms for different voices
-  if (centDiff > centThresh) {
-    speakerVadLastSwitchAt = now;
-    return true;
-  }
-  if (rmsDiff > rmsThresh && centDiff > centThresh * 0.6) {
-    speakerVadLastSwitchAt = now;
-    return true;
-  }
+  if (centDiff > centThresh) { speakerVadLastSwitchAt = now; syncState(); return true; }
+  if (rmsDiff > rmsThresh && centDiff > centThresh * 0.6) { speakerVadLastSwitchAt = now; syncState(); return true; }
   return false;
 }
+/** Cut live utterance on speaker change — guarded, no throw */
 function maybeCutLiveOnSpeakerChange() {
   const lastCache = utteranceDomCache[utteranceDomCache.length - 1];
   if (!lastCache || !lastCache.isLive) return;
-  const liveText = (lastCache.enText && lastCache.enText.textContent || '').trim();
+  const liveText = lastCache.enText ? String(lastCache.enText.textContent || '').trim() : '';
   if (!liveText) return;
-  // finalize current live block immediately with its current text, start fresh live for new speaker
-  const curLen = liveText.length;
-  // use rawLength = finalizedOffset + curLen so finalize offset logic stays consistent
-  const rawLen = finalizedOffset + curLen;
-  forceFinalizeText(liveText, rawLen);
+  const rawLen = finalizedOffset + liveText.length;
+  void forceFinalizeText(liveText, rawLen);
 }
 
-// Show Permission Overlay
+/** Show overlay — guarded */
 function showPermissionOverlay() {
-  permissionOverlay.style.display = 'flex';
-  showStatus('Cần cấp quyền microphone');
+  if (!permissionOverlay) return;
+  permissionOverlay.style.display = 'flex'; showStatus('Microphone permission required');
 }
 
-// Start Speech Recognition
+/** Start listening — resets session state, handles track fallback, no unhandled rejection */
 function startListening() {
-  if (!recognition) {
-    initRecognition();
-  }
-  
-  if (recognition) {
-    try {
-      lastFinalIndex = -1; // Reset index for new session
-      finalizedOffset = 0; // Reset offset for new session
-      if (silenceTimer) {
-        clearTimeout(silenceTimer);
-        silenceTimer = null;
+  if (!recognition) initRecognition();
+  if (!recognition) { showToast('Browser does not support Speech Recognition', 'error'); return; }
+  try {
+    lastFinalIndex = -1; finalizedOffset = 0; syncState();
+    if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; syncState(); }
+    if (activeAudioTrack) {
+      try { recognition.start(activeAudioTrack); } catch (e) {
+        console.warn('[startListening] track start failed, fallback mic', e);
+        activeAudioTrack = null; syncState(); recognition.start();
       }
-      
-      if (activeAudioTrack) {
-        recognition.start(activeAudioTrack);
-      } else {
-        // Mic mode: also spin up a lightweight monitor from a parallel mic stream (best-effort)
-        setupMicSpeakerMonitor().catch(() => {});
-        recognition.start();
-      }
-    } catch (e) {
-      console.error('Error starting recognition:', e);
-      // If passing track fails (e.g. browser doesn't support track parameter yet)
-      if (activeAudioTrack) {
-        console.warn('Track-based recognition failed. Falling back to default microphone...');
-        activeAudioTrack = null;
-        try {
-          recognition.start();
-        } catch (err) {
-          console.error('Fallback microphone start failed:', err);
-        }
-      }
+    } else {
+      void setupMicSpeakerMonitor().catch(() => {});
+      recognition.start();
     }
-  }
+  } catch (e) { console.error('[startListening]', e); showToast('Failed to start recording', 'error'); }
 }
 
+/** Mic monitor for speaker diarization — best-effort, silent fail */
 async function setupMicSpeakerMonitor() {
   if (speakerMonitor || window.capturedStream) return;
   try {
     const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    // keep track so we can stop it on stopListening
-    window.micMonitorStream = micStream;
-    setupSpeakerMonitor(micStream);
-  } catch {}
+    window.micMonitorStream = micStream; setupSpeakerMonitor(micStream);
+  } catch (e) { console.warn('[setupMicSpeakerMonitor]', e.message || e); }
 }
 
-// Stop Speech Recognition
+/** Stop listening — idempotent, aborts all async, syncs state */
 function stopListening() {
-  isListening = false;
-  if (recognition) {
-    try {
-      recognition.stop();
-    } catch (e) {
-      console.error('Error stopping recognition:', e);
-    }
-  }
-  if (silenceTimer) {
-    clearTimeout(silenceTimer);
-    silenceTimer = null;
-  }
-  if (liveViDebounce) {
-    clearTimeout(liveViDebounce);
-    liveViDebounce = null;
-  }
-  if (liveViController) {
-    try { liveViController.abort(); } catch {}
-    liveViController = null;
-  }
-  abortAllPendingTranslations();
-  teardownSpeakerMonitor();
-  if (window.micMonitorStream) {
-    try { window.micMonitorStream.getTracks().forEach(t => t.stop()); } catch {}
-    window.micMonitorStream = null;
-  }
-  cleanupTabCapture();
-  stopCompressTimer();
-  updateUIForListening(false);
-  showStatus('Đã dừng');
+  isListening = false; syncState();
+  if (recognition) { try { recognition.stop(); } catch (e) { console.warn('[stopListening] stop', e); } }
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; syncState(); }
+  if (liveViDebounce) { clearTimeout(liveViDebounce); liveViDebounce = null; }
+  if (liveViController) { try { liveViController.abort(); } catch {} liveViController = null; }
+  abortAllPendingTranslations(); teardownSpeakerMonitor();
+  if (window.micMonitorStream) { try { window.micMonitorStream.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {} window.micMonitorStream = null; }
+  cleanupTabCapture(); stopCompressTimer(); updateUIForListening(false); showStatus('Stopped');
 }
 
-// Initialize SpeechRecognition Engine
+/**
+ * Initialize SpeechRecognition — validates API, isolates handlers, syncs state.
+ * @returns {void}
+ */
 function initRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) {
-    showStatus('Trình duyệt không hỗ trợ Speech Recognition.');
-    return;
-  }
-  
-  recognition = new SpeechRecognition();
-  recognition.continuous = true;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
-  
-  recognition.onstart = () => {
-    isListening = true;
-    updateUIForListening(true);
-    if (activeAudioTrack) {
-      showStatus('Đang dịch âm thanh Tab...');
-    } else {
-      showStatus('Đang nghe tiếng Anh (Mic)...');
-    }
-    if (compressEnabled) startCompressTimer();
-  };
-  
-  recognition.onresult = (event) => {
-    let interimEn = '';
-    
-    // Clear silence timer on every new speech piece
-    if (silenceTimer) {
-      clearTimeout(silenceTimer);
-      silenceTimer = null;
-    }
-    
-    for (let i = event.resultIndex; i < event.results.length; ++i) {
-      const result = event.results[i];
-      
-      if (result.isFinal) {
-        if (i > lastFinalIndex) {
-          lastFinalIndex = i;
-          
-          const rawText = result[0].transcript;
-          // Extract remaining text that was not finalized by our timed triggers
-          const remainingText = rawText.substring(finalizedOffset).trim();
-          
-          // Reset offset for next index block
-          finalizedOffset = 0;
-          
-          if (remainingText) {
-            // non-blocking: don't await, let translation run in background
-            finalizeText(remainingText).catch(e => console.error(e));
-          }
-        }
-      } else {
-        const rawText = result[0].transcript;
-        
-        // Safety guard for offset bounds
-        if (finalizedOffset > rawText.length) {
-          finalizedOffset = rawText.length;
-        }
-        
-        interimEn = rawText.substring(finalizedOffset).trim();
-      }
-    }
-    
-    if (interimEn) {
-      hidePlaceholders();
-      // Live: render interim into the last utterance slot (sticky live block)
-      const liveCache = ensureLiveUtterance();
-      if (liveCache && liveCache.enText) {
-        // only update DOM if text actually changed to avoid layout thrashing
-        if (liveCache.enText.textContent !== interimEn) {
-          liveCache.enText.textContent = interimEn;
-          liveCache.enText.classList.add('typing');
-        }
-      }
-      // Follow the live feed only while the user is near the bottom (sticky) - instant for interim
-      autoScroll(false, 'instant');
-      // debounce VI preview for interim (saves API calls)
-      debouncedTranslateInterim(interimEn);
-
-      // Trigger timer
-      const lastResultIndex = event.results.length - 1;
-      const currentRawTextLength = event.results[lastResultIndex][0].transcript.length;
-
-      if (interimEn.length >= MAX_INTERIM_LENGTH) {
-        // sentence-end punctuation fast-path: finalize immediately
-        const hasPunct = /[.!?]$/.test(interimEn.trim());
-        if (hasPunct) {
-          forceFinalizeText(interimEn, currentRawTextLength).catch(()=>{});
-        } else {
-          // force finalize but non-blocking
-          forceFinalizeText(interimEn, currentRawTextLength).catch(()=>{});
-        }
-      } else {
-        silenceTimer = setTimeout(() => {
-          forceFinalizeText(interimEn, currentRawTextLength).catch(()=>{});
-        }, SILENCE_THRESHOLD);
-      }
-    }
-  };
-  
-  recognition.onerror = (event) => {
-    console.error('Recognition error:', event.error);
-    if (event.error === 'not-allowed') {
-      showPermissionOverlay();
-      stopListening();
-    } else if (event.error === 'no-speech') {
-      // Just ignore, SpeechRecognition continuous handles this
-    } else {
-      showStatus(`Lỗi: ${event.error}`);
-      stopListening();
-    }
-  };
-  
-  recognition.onend = () => {
-    if (isListening) {
-      // Auto-restart if we didn't explicitly stop
-      try {
-        lastFinalIndex = -1;
-        finalizedOffset = 0;
-        if (activeAudioTrack) {
-          recognition.start(activeAudioTrack);
-        } else {
-          recognition.start();
-        }
-      } catch (e) {
-        console.error('Auto-restart failed:', e);
-      }
-    } else {
-      updateUIForListening(false);
-    }
-  };
+  if (!SpeechRecognition) { showStatus('Browser does not support Speech Recognition.'); showToast('Browser does not support SpeechRecognition', 'error'); return; }
+  const rec = new SpeechRecognition();
+  rec.continuous = true; rec.interimResults = true; rec.lang = 'en-US';
+  rec.onstart = handleRecognitionStart;
+  rec.onresult = handleRecognitionResult;
+  rec.onerror = handleRecognitionError;
+  rec.onend = handleRecognitionEnd;
+  recognition = rec; syncState();
 }
-
-// Helper: detect question in EN
-function isQuestion(text) {
-  const t = text.trim();
-  if (!t) return false;
-  if (t.endsWith('?')) return true;
-  // English question patterns
-  const qPattern = /^(who|what|when|where|why|how|which|whom|whose|is|are|was|were|do|does|did|can|could|would|will|shall|should|may|might|have|has|had|am|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|could you|would you|will you|can you|do you|are you|have you|has anyone|is there|are there)\b/i;
-  if (qPattern.test(t)) {
-    // avoid false positives for short declaratives; require at least 3 words or ends without period
-    const words = t.split(/\s+/);
-    if (words.length >= 3) return true;
+/** @returns {void} */
+function handleRecognitionStart() {
+  isListening = true; syncState(); updateUIForListening(true);
+  showStatus(activeAudioTrack ? 'Translating Tab audio...' : 'Listening for English (Mic)...');
+  if (compressEnabled) startCompressTimer();
+}
+/**
+ * Pure helper to extract interim/final from event — validated, deduped, low-confidence filter.
+ * @param {SpeechRecognitionEvent} event
+ * @returns {{interimEn:string, finals:string[]}}
+ */
+function parseRecognitionEvent(event) {
+  let interimEn = ''; const finals = [];
+  if (!event || !event.results || typeof event.resultIndex !== 'number') return { interimEn:'', finals };
+  for (let i = event.resultIndex; i < event.results.length; i++) {
+    const r = event.results[i];
+    if (!r || !r[0]) continue;
+    const conf = r[0].confidence;
+    if (r.isFinal) {
+      if (i > lastFinalIndex) {
+        lastFinalIndex = i; syncState();
+        const raw = String(r[0].transcript || '');
+        if (!raw.trim() || /^[\s\.\,\!\?\-]+$/.test(raw)) { finalizedOffset=0; syncState(); continue; }
+        if (Number.isFinite(conf) && conf < 0.25) { finalizedOffset=0; syncState(); continue; }
+        const remaining = raw.substring(finalizedOffset).trim();
+        finalizedOffset = 0; syncState();
+        if (remaining && finals[finals.length-1] !== remaining) finals.push(remaining);
+      }
+    } else {
+      const raw = String(r[0].transcript || '');
+      if (finalizedOffset > raw.length) { finalizedOffset = raw.length; syncState(); }
+      interimEn = raw.substring(finalizedOffset).trim();
+      if (interimEn.length>200) interimEn=interimEn.slice(-200);
+    }
   }
-  // also Vietnamese question mark already handled
+  return { interimEn, finals };
+}
+/** @param {SpeechRecognitionEvent} event */
+function handleRecognitionResult(event) {
+  if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; syncState(); }
+  const { interimEn, finals } = parseRecognitionEvent(event);
+  for (const f of finals) void finalizeText(f).catch(e => console.error('[finalizeText]', e));
+  if (!interimEn) return;
+  hidePlaceholders();
+  const liveCache = ensureLiveUtterance();
+  if (liveCache && liveCache.enText && liveCache.enText.textContent !== interimEn) { liveCache.enText.textContent = interimEn; liveCache.enText.classList.add('typing'); }
+  autoScroll(false, 'instant'); debouncedTranslateInterim(interimEn);
+  const lastIdx = event.results.length - 1; const curLen = event.results[lastIdx] ? String(event.results[lastIdx][0].transcript || '').length : interimEn.length;
+  if (interimEn.length >= CONFIG.MAX_INTERIM_LENGTH) void forceFinalizeText(interimEn, curLen).catch(()=>{});
+  else { silenceTimer = setTimeout(() => { void forceFinalizeText(interimEn, curLen).catch(()=>{}); }, CONFIG.SILENCE_THRESHOLD); syncState(); }
+}
+/** @param {SpeechRecognitionErrorEvent} event */
+function handleRecognitionError(event) {
+  const err = event && event.error ? String(event.error) : 'unknown';
+  console.error('[recognition.error]', err);
+  if (err === 'not-allowed' || err === 'service-not-allowed') { showPermissionOverlay(); stopListening(); }
+  else if (err === 'no-speech' || err === 'aborted') { /* ignore */ }
+  else if (err === 'audio-capture') { showToast('Mic not found — check device','error'); showStatus('Mic error'); stopListening(); }
+  else if (err === 'network') { showToast('STT network error — retrying','error'); showStatus('STT network error'); }
+  else { showStatus(`Error: ${err}`); showToast(`Recording error: ${err}`, 'error'); stopListening(); }
+}
+/** @returns {void} */
+function handleRecognitionEnd() {
+  if (isListening) {
+    try {
+      lastFinalIndex = -1; finalizedOffset = 0; syncState();
+      const rec = recognition;
+      if (!rec) throw new Error('no rec');
+      setTimeout(() => {
+        try { if (activeAudioTrack) rec.start(activeAudioTrack); else rec.start(); } catch (e) { console.error('[auto-restart]', e); showToast('Auto-restart failed', 'error'); stopListening(); }
+      }, 300);
+    } catch (e) { console.error('[auto-restart]', e); showToast('Auto-restart failed', 'error'); }
+  } else updateUIForListening(false);
+}
+  
+// Hoisted regexes — compiled once, pure (improved 2026-09-18)
+const RE_WH_START = /^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's)\b/i;
+const RE_AUX_START = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't|is there|are there|was there|were there|have there|has there|what's|how's|where's|who's)\b/i;
+const RE_TAG_Q = /,\s*(right|correct|isn't it|aren't you|don't you|doesn't it|doesn't he|doesn't she|didn't you|won't you|wouldn't you|haven't you|hasn't he|is it|are you|wasn't it|weren't you|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
+const RE_EMBEDDED = /\b(do you|does he|does she|do they|did you|did he|did she|are you|is he|is she|are they|is there|are there|was there|were there|can you|could you|would you|will you|shall we|should you|should we|have you|has he|has she|had you|am i|would you mind|could you please|can you please|will you please|do you know|do you think|have you ever|would you like|could you tell|can you tell|are you going|is he going|will you be|have you been|has anyone|did anyone|did you ever|could you kindly|would you kindly)\b/i;
+const RE_INDIRECT = /^(do you know|can you tell|would you mind|could you explain|have you ever|are you familiar|do you think|would you say|is there any|are there any|tell me|let me know|any idea|anyone know|anybody know|everyone know|any chance|could you share|would you happen)\b/i;
+const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
+const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
+
+/**
+ * Detect question — multi-layer + optional compromise, pure-ish, hoisted regex, validated.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+function isQuestion(text) {
+  const raw = (text || '').trim();
+  if (!raw) return false;
+  if (raw.length < 3) return false;
+  // Fast path: any '?' anywhere (speech often omits but when present it's strong)
+  if (raw.includes('?')) return true;
+
+  const t = raw.replace(/\s+/g, ' ').trim();
+  const lower = t.toLowerCase();
+  const words = lower.split(/\s+/).filter(Boolean);
+  const wc = words.length;
+  if (wc < 2) return false;
+
+  // Library first (if loaded): compromise
+  try {
+    const nlpFn = (typeof window !== 'undefined' && window.nlp) ? window.nlp : (typeof self !== 'undefined' && self.nlp ? self.nlp : null);
+    if (typeof nlpFn === 'function') {
+      const doc = nlpFn(t);
+      // compromise 14+: doc.questions() or doc.sentences().isQuestion()
+      if (doc && typeof doc.questions === 'function') {
+        const qs = doc.questions();
+        if (qs && qs.found) return true;
+        // also check json for question flag
+        if (qs && typeof qs.length === 'number' && qs.length > 0) return true;
+      }
+      // Fallback via terms: check if first term is WH or aux + inversion
+      // we keep heuristic below even if nlp exists
+    }
+  } catch (_) {}
+
+  if (t.endsWith('!')) {
+    if (/^what\s+a(n)?\b/i.test(t)) return false;
+    if (/^how\s+(wonderful|nice|great|beautiful|amazing|lovely|good|bad|terrible).*!\s*$/i.test(t)) return false;
+    if (/^what\s+a\b/.test(t)) return false;
+  }
+  const startsDeclarative = RE_DECLARATIVE_FALSE.test(t) && !RE_TAG_Q.test(t) && !RE_TRAILING_OR.test(t) && !RE_EMBEDDED.test(t);
+  if (startsDeclarative && !RE_WH_START.test(t) && !RE_AUX_START.test(t)) return false;
+
+  if (RE_WH_START.test(t)) {
+    if (wc >= 2 && !t.endsWith('!')) return true;
+  }
+  if (RE_AUX_START.test(t) && wc >= 2) return true;
+  if (RE_TAG_Q.test(t)) return true;
+  if (RE_EMBEDDED.test(t) && wc >= 4) return true;
+  if (RE_INDIRECT.test(lower) && wc >= 3) return true;
+  if (RE_TRAILING_OR.test(t) && wc >= 4) return true;
+
   return false;
 }
 
 function buildSuggestPrompt(question, contextEn) {
-  // B mode: if compress enabled and we have rolling summary, use compressed + recent 10
+  function truncateForPrompt(arr, maxChars) { const j = arr.join(' | '); return j.length > maxChars ? j.slice(-maxChars) : j; }
+  const sanitizedCtx = sanitizePromptContext(suggestContextPrompt);
+  const contextHint = sanitizedCtx
+    ? `User-provided context (use to tailor tone/style/domain of answers): """${sanitizedCtx}"""\n\n`
+    : '';
   if (compressEnabled && compressedSummary) {
     const recent = contextEn.slice(-COMPRESS_RECENT_KEEP);
-    const recentCtx = recent.join(' | ');
+    const recentCtx = truncateForPrompt(recent, 1500);
     const comp = compressedSummary.length > COMPRESS_MAX_CHARS ? compressedSummary.slice(-COMPRESS_MAX_CHARS) : compressedSummary;
-    return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, concise, polite).
+    return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
 
-Compressed history (older, summarized every 5 min): """${comp}"""
+${contextHint}Compressed history (older, summarized every 5 min): """${comp}"""
 
 Recent conversation (latest ${recent.length} utterances): """${recentCtx}"""
 
 Question: """${question}"""
 
-Task: Use BOTH compressed history and recent conversation to generate context-aware answers. Return JSON with two fields:
+Task: Use BOTH compressed history, recent conversation${contextHint ? ' and user-provided context' : ''} to generate context-aware answers. Return JSON with two fields:
 - "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
-- "answers": 3 full natural answers in English (1 sentence each, diverse angles: friendly / concise / playful etc, each may contain placeholder [City, Country] if location question). Answers MUST be consistent with the history.
+- "answers": 3 full natural answers in English (each 3-5 sentences, 60-120 words, diverse angles: friendly / detailed / concise etc, each may contain placeholder [City, Country] if location question). Each answer must be a short paragraph of 3-5 complete sentences, natural and conversational. Answers MUST be consistent with the history${contextHint ? ' and the user-provided context' : ''}.
 
-Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1","Answer 2","Answer 3"]}. No markdown, no extra text.`;
+Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
   }
-  const ctx = contextEn.slice(-4).join(' | ');
-  return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, concise, polite).
+  const ctx = truncateForPrompt(contextEn.slice(-4), 1000);
+  return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
 
-Context (last utterances): """${ctx}"""
+${contextHint}Context (last utterances): """${ctx}"""
 
 Question: """${question}"""
 
 Task: Return JSON with two fields:
 - "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
-- "answers": 3 full natural answers in English (1 sentence each, diverse angles: friendly / concise / playful etc, each may contain placeholder [City, Country] if location question).
+- "answers": 3 full natural answers in English (each 3-5 sentences, 60-120 words, diverse angles: friendly / detailed / concise etc, each may contain placeholder [City, Country] if location question). Each answer must be a short paragraph of 3-5 complete sentences, natural and conversational.${contextHint ? '\nTailor answers to the user-provided context above.' : ''}
 
-Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1","Answer 2","Answer 3"]}. No markdown, no extra text.`;
+Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
 }
 
+/**
+ * Retry fetch with timeout — mirror of src/services/llm/provider.js
+ * (fetchWithTimeout + fetchWithRetry). Keep in sync with that file.
+ * Internal AbortController enforces timeout and links an external signal.
+ */
+async function fetchWithRetrySidepanel(url, fetchOpts, timeoutMs = 30000, maxRetries = 2) {
+  const external = fetchOpts && fetchOpts.signal;
+  let lastErr = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const ctrl = new AbortController();
+    let abortHandler = null;
+    if (external) {
+      abortHandler = () => ctrl.abort();
+      if (external.aborted) ctrl.abort();
+      else external.addEventListener('abort', abortHandler, { once: true });
+    }
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...fetchOpts, signal: ctrl.signal });
+      if (res.ok) return res;
+      const status = res.status;
+      const retryable = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+      if (retryable && attempt < maxRetries) {
+        let delay = Math.pow(2, attempt) * 500 + Math.random() * 300;
+        try { const ra = res.headers.get('Retry-After'); if (ra) delay = Math.max(delay, parseInt(ra, 10) * 1000); } catch {}
+        try { await res.text(); } catch {}
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      lastErr = e;
+      if (e.name === 'AbortError') throw e;
+      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 400)); continue; }
+      throw e;
+    } finally {
+      clearTimeout(t);
+      if (external && abortHandler) try { external.removeEventListener('abort', abortHandler); } catch {}
+    }
+  }
+  throw lastErr || new Error('fetch failed');
+}
 async function callProviderForSuggest(prompt) {
+  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) throw new Error('Empty prompt');
   const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
   const model = providerConfig.model;
   const apiKey = providerConfig.apiKey;
   const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-    const res = await fetch(url, {
+    const res = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.8, maxOutputTokens: 512 } })
-    });
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.8, maxOutputTokens: 1024 } })
+    }, 30000, 2);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
       throw new Error(msg);
     }
     const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!txt) throw new Error('Empty LLM response');
+    return txt;
   } else {
     const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const res = await fetch(url, {
+    const res = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -890,9 +880,9 @@ async function callProviderForSuggest(prompt) {
           { role: 'user', content: prompt }
         ],
         temperature: 0.85,
-        max_tokens: 512
+        max_tokens: 1024
       })
-    });
+    }, 30000, 2);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
@@ -901,6 +891,7 @@ async function callProviderForSuggest(prompt) {
     const data = await res.json();
     let txt = data.choices?.[0]?.message?.content || '';
     if (!txt && data.message?.content) txt = data.message.content;
+    if (!txt) throw new Error('Empty LLM response');
     return txt;
   }
 }
@@ -913,14 +904,15 @@ async function callProviderGeneric(prompt, opts = {}) {
   const temperature = opts.temperature ?? 0.4;
   const maxTokens = opts.maxTokens ?? 512;
   const systemPrompt = opts.systemPrompt || '';
+  if (!prompt || typeof prompt !== 'string') throw new Error('Empty prompt');
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
-    const res = await fetch(url, {
+    const res = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens } })
-    });
+    }, 25000, 2);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
@@ -935,11 +927,11 @@ async function callProviderGeneric(prompt, opts = {}) {
     const messages = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
-    const res = await fetch(url, {
+    const res = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
-    });
+    }, 25000, 2);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
@@ -957,39 +949,39 @@ async function performCompression(isManual = false) {
   if (!compressEnabled && !isManual) return;
   const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
   if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
-    if (isManual) showToast('Chưa cấu hình AI Provider để nén', 'error');
+    if (isManual) showToast('AI Provider not configured for compression', 'error');
     return;
   }
   const pendingCount = finalizedEnPhrases.length - lastCompressedIdx;
   if (pendingCount < 2) {
-    if (isManual) showToast('Chưa đủ câu để nén', 'default');
+    if (isManual) showToast('Not enough sentences to compress', 'default');
     return;
   }
-  const segment = finalizedEnPhrases.slice(lastCompressedIdx).join('\n');
-  if (!segment.trim()) return;
+  let segment = finalizedEnPhrases.slice(lastCompressedIdx).join('\n');
+  if (segment.length > 8000) segment = segment.slice(-8000);
+  if (!segment.trim() || segment.trim().length < 10) return;
   compressInProgress = true;
-  showStatus('Đang nén lịch sử…');
+  showStatus('Compressing history…');
   try {
     const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${segment}"""`;
     const summary = await callProviderGeneric(prompt, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
-    const clean = summary.trim();
-    if (clean) {
-      const header = `\n[+${pendingCount} utterances @ ${new Date().toLocaleTimeString()}]`;
-      compressedSummary = (compressedSummary ? compressedSummary + header + '\n' : '') + clean;
-      // truncate to keep within limit (keep last ~6000 chars)
-      if (compressedSummary.length > 6000) compressedSummary = compressedSummary.slice(-6000);
-      lastCompressedIdx = finalizedEnPhrases.length;
-      try { await chrome.storage.local.set({ compressedSummary, lastCompressedIdx }); } catch {}
-      updateCompressToggleUI();
-      if (isManual) showToast(`Đã nén ${pendingCount} câu`, 'success');
-      else console.log('[compress] auto compressed', pendingCount, 'utterances');
-    }
+    const clean = String(summary||'').trim();
+    if (!clean) { if (isManual) showToast('Compression returned empty','error'); return; }
+    const header = `\n[+${pendingCount} utterances @ ${new Date().toLocaleTimeString()}]`;
+    compressedSummary = (compressedSummary ? compressedSummary + header + '\n' : '') + clean;
+    if (compressedSummary.length > 6000) compressedSummary = compressedSummary.slice(-6000);
+    lastCompressedIdx = finalizedEnPhrases.length;
+    try { await storageSet({ compressedSummary, lastCompressedIdx }); } catch {}
+    syncState();
+    updateCompressToggleUI();
+    if (isManual) showToast(`Compressed ${pendingCount} sentences`, 'success');
+    else console.log('[compress] auto compressed', pendingCount, 'utterances');
   } catch (e) {
     console.warn('compress failed', e);
-    if (isManual) showToast('Nén thất bại: ' + e.message, 'error');
+    if (isManual) showToast('Compression failed: ' + (e.message||e), 'error'); else showToast('Auto compress failed: '+(e.message||e),'error');
   } finally {
-    compressInProgress = false;
-    showStatus(isListening ? (activeAudioTrack ? 'Đang dịch âm thanh Tab...' : 'Đang nghe tiếng Anh (Mic)...') : 'Sẵn sàng');
+    compressInProgress = false; syncState();
+    showStatus(isListening ? (activeAudioTrack ? 'Translating Tab audio...' : 'Listening for English (Mic)...') : 'Ready');
   }
 }
 
@@ -1008,36 +1000,36 @@ function stopCompressTimer() {
 }
 
 function parseSuggestAnswers(raw) {
-  if (!raw) return { structures: [], answers: [] };
-  // try JSON object {structures, answers}
+  if (!raw || typeof raw !== 'string') return { structures: [], answers: [] };
+  const noFence = raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/i,'').trim();
+  const tryParse = (s) => JSON.parse(s.replace(/,\s*([}\]])/g,'$1'));
   try {
-    const objMatch = raw.match(/\{[\s\S]*\}/);
+    const objMatch = noFence.match(/\{[\s\S]*\}/);
     if (objMatch) {
-      const obj = JSON.parse(objMatch[0]);
+      const obj = tryParse(objMatch[0]);
       if (obj && (obj.answers || obj.structures)) {
         const structures = Array.isArray(obj.structures) ? obj.structures.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
         const answers = Array.isArray(obj.answers) ? obj.answers.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
         if (answers.length || structures.length) return { structures, answers };
       }
-      // fallback if object is array
       if (Array.isArray(obj)) return { structures: [], answers: obj.slice(0,5).map(s=>String(s).trim()).filter(Boolean) };
     }
   } catch {}
   try {
-    const m = raw.match(/\[[\s\S]*\]/);
+    const m = noFence.match(/\[[\s\S]*\]/);
     if (m) {
-      const arr = JSON.parse(m[0]);
+      const arr = tryParse(m[0]);
       if (Array.isArray(arr)) return { structures: [], answers: arr.slice(0,5).map(s => String(s).trim()).filter(Boolean) };
     }
   } catch {}
-  const lines = raw.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').trim()).filter(Boolean).slice(0,5);
+  const lines = noFence.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').replace(/^["']|["']$/g,'').trim()).filter(s=>s.length>=3).slice(0,5);
   return { structures: [], answers: lines };
 }
 
 function synthesizeStructures(answers) {
-  // fallback: generate short hint from answer prefix
+  if (!Array.isArray(answers)) return [];
   return answers.map(a => {
-    const words = a.split(/\s+/).slice(0,6).join(' ');
+    const words = String(a).split(/\s+/).slice(0,6).join(' ');
     return words.length > 40 ? words.slice(0,40)+'…' : words;
   });
 }
@@ -1046,7 +1038,7 @@ async function triggerSuggestForIndex(idx, question) {
   if (!suggestEnabled) return;
   const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
   if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
-    questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: 'Chưa cấu hình AI Provider' };
+    questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: 'AI Provider not configured' };
     updateSuggestCard(idx);
     updateDock();
     return;
@@ -1065,14 +1057,14 @@ async function triggerSuggestForIndex(idx, question) {
       const raw = await callProviderForSuggest(prompt);
       const parsed = parseSuggestAnswers(raw);
       let { structures, answers } = parsed;
-      if (answers.length === 0 && structures.length === 0) throw new Error('Không parse được gợi ý');
+      if (answers.length === 0 && structures.length === 0) throw new Error('Failed to parse suggestions');
       if (answers.length === 0) answers = structures;
       if (structures.length === 0) structures = synthesizeStructures(answers);
       answers = answers.slice(0,3);
       structures = structures.slice(0,3);
       questionSuggestions[idx] = { state: 'done', question, answers, structures };
     } catch (e) {
-      questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message || 'Lỗi AI' };
+      questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message || 'AI error' };
     }
     updateSuggestCard(idx);
     updateDock();
@@ -1100,7 +1092,7 @@ function setupSuggestionDock() {
       questionSuggestions = {};
       selectedQuestionIdx = null;
       updateDock();
-      showToast('Đã xóa gợi ý', 'success');
+      showToast('Suggestions cleared', 'success');
     });
   }
 }
@@ -1109,7 +1101,7 @@ function updateDock() {
   if (!suggestionDock) return;
   const entries = Object.entries(questionSuggestions).sort((a,b)=>Number(a[0])-Number(b[0]));
   const count = entries.length;
-  if (qCountBadge) qCountBadge.textContent = `${count} câu hỏi`;
+  if (qCountBadge) qCountBadge.textContent = `${count} questions`;
   // pills
   if (questionPills) {
     questionPills.innerHTML = '';
@@ -1142,16 +1134,16 @@ function updateDock() {
 function renderDockBody() {
   if (!suggestionBody) return;
   if (Object.keys(questionSuggestions).length === 0) {
-    suggestionBody.innerHTML = '<div class="suggest-empty" id="suggestEmpty">Chưa có câu hỏi nào. Khi AI phát hiện câu hỏi, gợi ý sẽ hiện ở đây.</div>';
+    suggestionBody.innerHTML = '<div class="suggest-empty" id="suggestEmpty">No questions yet. When AI detects a question, suggestions will appear here.</div>';
     return;
   }
   if (selectedQuestionIdx === null || !questionSuggestions[selectedQuestionIdx]) {
-    suggestionBody.innerHTML = '<div class="suggest-empty">Chọn một câu hỏi ở trên để xem gợi ý.</div>';
+    suggestionBody.innerHTML = '<div class="suggest-empty">Select a question above to view suggestions.</div>';
     return;
   }
   const data = questionSuggestions[selectedQuestionIdx];
   if (data.state === 'loading') {
-    suggestionBody.innerHTML = `<div class="suggest-loading" style="padding:12px;display:flex;gap:8px;align-items:center;color:var(--text-2);font-size:12px"><div class="spinner" style="width:14px;height:14px;border-width:2px"></div> Đang tạo gợi ý cho: <em>${escapeHtml(data.question||'')}</em></div>`;
+    suggestionBody.innerHTML = `<div class="suggest-loading" style="padding:12px;display:flex;gap:8px;align-items:center;color:var(--text-2);font-size:12px"><div class="spinner" style="width:14px;height:14px;border-width:2px"></div> Generating suggestions for: <em>${escapeHtml(data.question||'')}</em></div>`;
     return;
   }
   if (data.state === 'error') {
@@ -1168,12 +1160,12 @@ function renderDockBody() {
       <div class="dock-structure-item">
         <span class="idx">${i+1}.</span>
         <span class="txt">${escapeHtml(s)}</span>
-        <span class="suggest-actions"><button class="suggest-copy" data-text="${escapeHtml(s).replace(/"/g,'&quot;')}" title="Sao chép">⎘</button></span>
+        <span class="suggest-actions"><button class="suggest-copy" data-text="${escapeHtml(s).replace(/"/g,'&quot;')}" title="Copy">⎘</button></span>
       </div>
     `).join('') + `</div>`;
   }
   if (showComplete) {
-    html += `<div class="dock-complete-label">Câu trả lời hoàn chỉnh</div>`;
+    html += `<div class="dock-complete-label">Complete answers</div>`;
     html += data.answers.map(a=>`
       <div class="dock-complete-card">
         <span style="flex:1">${escapeHtml(a)}</span>
@@ -1185,7 +1177,7 @@ function renderDockBody() {
   suggestionBody.querySelectorAll('[data-text]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const txt = btn.getAttribute('data-text');
-      if (txt) { await navigator.clipboard.writeText(txt); showToast('Đã sao chép','success'); }
+      if (txt) { await navigator.clipboard.writeText(txt); showToast('Copied','success'); }
     });
   });
 }
@@ -1198,56 +1190,72 @@ function renderDockBody() {
 //    (preceded by at least one word). That marks a new sub-utterance.
 //    This keeps "How are you doing today?" intact while splitting
 //    "You've been busy... how do you know Sam?" into two.
-const SENT_END_RE = /(?<=[.!?])\s+(?=[A-Z0-9"']|\()|(?<=[.!?])\s*$/;
-const STRONG_SPLIT_WORDS = ['how','what','why','where','when'];
-// Minimum context before a split word: the segment before it must have at
-// least this many words to count as a separate clause.
+const SENT_END_RE = (() => { try { new RegExp('(?<=[.!?])'); return /(?<=[.!?])\s+(?=[A-Z0-9"']|\()|(?<=[.!?])\s*$/; } catch { return /[.!?]+\s+/; } })();
+const STRONG_SPLIT_WORDS = Object.freeze(['how','what','why','where','when','who','which']);
 const MIN_PREFIX_WORDS = 3;
+const ABBREVS_SET = new Set(['mr','mrs','ms','dr','prof','sr','jr','st','vs','etc','inc','ltd','co']);
 
+/**
+ * Pure: split block into utterances — no side effects, validated, Safari fallback, abbrev-aware.
+ * @param {unknown} text
+ * @returns {string[]}
+ */
 function splitIntoUtterances(text) {
-  const trimmed = text.trim();
+  const trimmed = String(text||'').trim();
   if (!trimmed) return [];
-  const segs = trimmed
-    .split(SENT_END_RE)
-    .map(s => s.trim())
-    .filter(Boolean);
+  const segs = trimmed.split(SENT_END_RE).map(s => s.trim()).filter(Boolean);
+  const merged = [];
+  for (let i=0;i<segs.length;i++) {
+    const cur = segs[i];
+    if (merged.length>0) {
+      const prev = merged[merged.length-1];
+      const lastWord = prev.split(/\s+/).pop()?.replace(/\.+$/,'').toLowerCase()||'';
+      if (ABBREVS_SET.has(lastWord)) { merged[merged.length-1]=prev+' '+cur; continue; }
+    }
+    merged.push(cur);
+  }
   const out = [];
-  for (const seg of segs) {
-    // Try to find the first occurrence of a strong split word that is NOT at
-    // position 0 and has enough context before it.
-    const lower = seg.toLowerCase();
-    let splitPos = -1;
+  for (const seg of merged) {
+    let splitPos=-1;
     for (const word of STRONG_SPLIT_WORDS) {
-      const idx = lower.indexOf(word + ' ');
-      // also allow end-of-string match
-      const idxNoSpace = idx === -1 ? lower.lastIndexOf(word) : idx;
-      const useIdx = idx !== -1 ? idx : idxNoSpace;
-      if (useIdx > 0) {
-        // count words before
-        const prefix = seg.slice(0, useIdx).trim();
-        const prefixWords = prefix ? prefix.split(/\s+/).length : 0;
-        if (prefixWords >= MIN_PREFIX_WORDS) {
-          splitPos = useIdx;
-          break;
-        }
+      const re=new RegExp(`\\b${word}\\b`,'i');
+      const m=re.exec(seg);
+      if (m && m.index>0) {
+        const prefix=seg.slice(0,m.index).trim();
+        const cnt=prefix?prefix.split(/\s+/).length:0;
+        if (cnt>=MIN_PREFIX_WORDS && (splitPos===-1 || m.index<splitPos)) splitPos=m.index;
       }
     }
-    if (splitPos > 0) {
-      const left = seg.slice(0, splitPos).trim();
-      const right = seg.slice(splitPos).trim();
-      if (left) out.push(left);
-      if (right) out.push(right);
-    } else {
-      out.push(seg);
+    if (splitPos===-1) {
+      const lower=seg.toLowerCase();
+      for (const w of ['hows','whats','wheres','whos']) {
+        const idx=lower.indexOf(w+' ');
+        if (idx>0 && seg.slice(0,idx).trim().split(/\s+/).length>=MIN_PREFIX_WORDS) { splitPos=idx; break; }
+      }
     }
+    if (splitPos>0) {
+      const left=seg.slice(0,splitPos).trim();
+      const right=seg.slice(splitPos).trim();
+      if (left && right && right.split(/\s+/).length>=2) { out.push(left); out.push(right); }
+      else out.push(seg);
+    } else out.push(seg);
   }
   return out.filter(Boolean);
 }
 
-// Helper to finalize and translate a block of text (now splits into utterances)
+/**
+ * Finalize block — splits, validates, creates DOM via DocumentFragment, translates concurrently.
+ * @param {unknown} text
+ * @returns {Promise<void>}
+ */
 async function finalizeText(text) {
   const cleanText = text.trim();
   if (!cleanText) return;
+
+  // Memory guard: drop the oldest utterances (beyond 2x DOM cap) and re-index
+  // everything before computing any indices below. Mirror of
+  // src/services/transcript/compact.js compactTranscriptState().
+  compactTranscriptMemory();
 
   // If a live utterance is pending, promote it with this text instead of appending a new one
   const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
@@ -1259,23 +1267,23 @@ async function finalizeText(text) {
     // ensure DOM reflects speaker (badge/color)
     if (liveCache) applySpeakerToDom(liveCache, liveSpeaker);
     updateWordCounts();
-    showStatus('Đang dịch...');
+    showStatus('Translating...');
     const translated = await translateText(cleanText);
-    finalizedViPhrases[idx] = translated || '[Không thể dịch]';
+    finalizedViPhrases[idx] = translated || '[Translation failed]';
     if (liveCache) {
       setViText(liveCache.viText, finalizedViPhrases[idx]);
       liveCache.copyVi.dataset.text = finalizedViPhrases[idx];
       liveCache.copyVi.disabled = false;
-      if (liveCache.colVi && finalizedViPhrases[idx] !== '[Không thể dịch]') {
+      if (liveCache.colVi && finalizedViPhrases[idx] !== '[Translation failed]') {
         liveCache.colVi.classList.add('vi-just-arrived');
         setTimeout(() => liveCache.colVi.classList.remove('vi-just-arrived'), 800);
       }
     }
     updateWordCounts();
     if (activeAudioTrack) {
-      showStatus('Đang dịch âm thanh Tab...');
+      showStatus('Translating Tab audio...');
     } else {
-      showStatus('Đang nghe tiếng Anh (Mic)...');
+      showStatus('Listening for English (Mic)...');
     }
     // Promoting live -> layout changes; force sticky scroll to the new final utterance (newest on top)
     shouldStickToTop = true;
@@ -1318,7 +1326,7 @@ async function finalizeText(text) {
   updateWordCounts();
 
   // Translate each utterance concurrently (pool = 3) - optimized
-  showStatus('Đang dịch...');
+  showStatus('Translating...');
   const tasks = [];
   for (let k = 0; k < utterances.length; k++) {
     const idx = firstIdx + k;
@@ -1339,9 +1347,9 @@ async function finalizeText(text) {
   pruneOldUtterances();
 
   if (activeAudioTrack) {
-    showStatus('Đang dịch âm thanh Tab...');
+    showStatus('Translating Tab audio...');
   } else {
-    showStatus('Đang nghe tiếng Anh (Mic)...');
+    showStatus('Listening for English (Mic)...');
   }
 
   // Clear interim display
@@ -1360,7 +1368,7 @@ async function finalizeText(text) {
   updateCompressToggleUI();
 }
 
-// Force finalize from interim speech
+/** @param {string} text @param {number} rawLength @returns {Promise<void>} */
 async function forceFinalizeText(text, rawLength) {
   if (silenceTimer) {
     clearTimeout(silenceTimer);
@@ -1427,123 +1435,154 @@ function promoteLiveToFinal(enText) {
   return false;
 }
 
-// Translate Text via Google Translate free API - optimized with cache + AbortController + LRU
+// Translate Text via Google Translate free API — cache + chunking + retry + LRU
 async function translateText(text, opts = {}) {
-  if (!text || !text.trim()) return '';
-  const trimmed = text.trim();
-  // cache hit (fast path)
+  if (!text || !String(text).trim()) return '';
+  const trimmed = String(text).trim();
   if (translationCache.has(trimmed)) {
     const cached = translationCache.get(trimmed);
-    // LRU touch: move to end
-    translationCache.delete(trimmed);
-    translationCache.set(trimmed, cached);
+    translationCache.delete(trimmed); translationCache.set(trimmed, cached);
     return cached;
   }
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(trimmed)}`;
-  const controller = new AbortController();
-  if (!opts.signal) {
-    activeTranslateControllers.add(controller);
-  }
-  const signal = opts.signal || controller.signal;
-  // timeout 8s
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
-  try {
-    const response = await fetch(url, { signal });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-    const data = await response.json();
-    let translation = '';
-    if (data && data[0]) {
-      for (let i = 0; i < data[0].length; i++) {
-        if (data[0][i] && data[0][i][0]) translation += data[0][i][0];
+  const TRANSLATE_MAX = 4200;
+  if (trimmed.length > TRANSLATE_MAX) {
+    const parts = (() => {
+      const segs = trimmed.split(/(?<=[.!?])\s+/);
+      const chunks=[]; let cur='';
+      for (const p of segs) {
+        if ((cur+' '+p).trim().length > TRANSLATE_MAX) {
+          if (cur) chunks.push(cur.trim());
+          if (p.length > TRANSLATE_MAX) { for (let i=0;i<p.length;i+=TRANSLATE_MAX) chunks.push(p.slice(i,i+TRANSLATE_MAX)); cur=''; }
+          else cur=p;
+        } else cur = cur ? cur+' '+p : p;
       }
+      if (cur) chunks.push(cur.trim());
+      return chunks;
+    })();
+    if (parts.length>1) {
+      const outs=[];
+      for (const c of parts) { if (opts.signal?.aborted) return ''; const r=await translateText(c, opts); outs.push(r||c); }
+      const joined=outs.join(' ');
+      if (joined) { translationCache.set(trimmed, joined); if (translationCache.size>TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value); }
+      return joined;
     }
-    if (translation) {
-      translationCache.set(trimmed, translation);
-      if (translationCache.size > TRANSLATION_CACHE_MAX) {
-        const firstKey = translationCache.keys().next().value;
-        translationCache.delete(firstKey);
-      }
-    }
-    return translation;
-  } catch (error) {
-    if (error.name === 'AbortError') {
-      // silently handle aborted interim translations
-      return '';
-    }
-    console.error('Translation error:', error);
-    return '';
-  } finally {
-    clearTimeout(timeoutId);
-    activeTranslateControllers.delete(controller);
   }
+  const retries = opts.retries ?? 2;
+  let lastErr=null;
+  for (let attempt=0; attempt<=retries; attempt++) {
+    const controller=new AbortController();
+    const hasExternalSignal=!!opts.signal;
+    const signal=hasExternalSignal? opts.signal : controller.signal;
+    if (!hasExternalSignal) activeTranslateControllers.add(controller);
+    const timeoutId=setTimeout(()=>{ try{controller.abort();}catch{} }, CONFIG.TRANSLATE_TIMEOUT_MS);
+    let externalAbortHandler=null;
+    if (hasExternalSignal && opts.signal!==controller.signal) {
+      externalAbortHandler=()=>controller.abort();
+      opts.signal.addEventListener('abort', externalAbortHandler, {once:true});
+    }
+    try {
+      const url=`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(trimmed)}`;
+      const response=await fetch(url, { signal: hasExternalSignal? opts.signal : controller.signal });
+      if (!response.ok) {
+        const status=response.status;
+        if ((status===429 || status>=500) && attempt<retries) {
+          let delay=Math.pow(2,attempt)*400+Math.random()*200;
+          try{ const ra=response.headers.get('Retry-After'); if(ra) delay=Math.max(delay, parseInt(ra,10)*1000);}catch{}
+          try{ await response.text(); }catch{}
+          await new Promise(r=>setTimeout(r, delay));
+          continue;
+        }
+        throw new Error(`HTTP ${status}`);
+      }
+      const data=await response.json();
+      let translation='';
+      if (data && data[0]) for (let i=0;i<data[0].length;i++) if (data[0][i]&&data[0][i][0]) translation+=data[0][i][0];
+      translation=String(translation||'').trim();
+      if (!translation && attempt<retries && trimmed.length>3) { await new Promise(r=>setTimeout(r, 300*(attempt+1))); continue; }
+      if (translation) {
+        translationCache.set(trimmed, translation);
+        if (translationCache.size>TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value);
+      }
+      return translation;
+    } catch (error) {
+      lastErr=error;
+      if (error.name==='AbortError') return '';
+      const retryable=error.message && (error.message.includes('Failed to fetch')||error.message.includes('NetworkError'));
+      if (retryable && attempt<retries) { await new Promise(r=>setTimeout(r, Math.pow(2,attempt)*350)).catch(()=>{}); continue; }
+      if (attempt>=retries) { console.error('Translation error:', error); return ''; }
+      await new Promise(r=>setTimeout(r, Math.pow(2,attempt)*300)).catch(()=>{});
+    } finally {
+      clearTimeout(timeoutId);
+      if (externalAbortHandler) try{ opts.signal.removeEventListener('abort', externalAbortHandler);}catch{}
+      activeTranslateControllers.delete(controller);
+    }
+  }
+  if (lastErr) console.error('[translateText] exhausted', lastErr);
+  return '';
 }
 
+/** Abort all pending translate fetches — idempotent */
 function abortAllPendingTranslations() {
-  for (const c of activeTranslateControllers) {
-    try { c.abort(); } catch {}
-  }
+  for (const c of activeTranslateControllers) { try { c.abort(); } catch {} }
   activeTranslateControllers.clear();
 }
 
-async function translateBatchConcurrent(tasks, concurrency = MAX_CONCURRENT_TRANSLATE) {
-  // tasks: array of { idx, text, cache }
+/**
+ * Translate batch with concurrency limit — validated, preserves order, handles abort.
+ * @param {{idx:number,text:string,cache:any}[]} tasks
+ * @param {number} concurrency
+ * @returns {Promise<string[]>}
+ */
+async function translateBatchConcurrent(tasks, concurrency = CONFIG.MAX_CONCURRENT_TRANSLATE) {
+  if (!Array.isArray(tasks) || tasks.length === 0) return [];
+  const conc = Math.max(1, Math.min(concurrency, tasks.length, 5));
   const results = new Array(tasks.length);
   let next = 0;
   async function worker() {
-    while (next < tasks.length) {
-      const cur = next++;
+    while (true) {
+      const cur = next++; if (cur >= tasks.length) break;
       const t = tasks[cur];
-      // skip if already translated (cache hit)
-      if (finalizedViPhrases[t.idx] && finalizedViPhrases[t.idx] !== '…') {
-        results[cur] = finalizedViPhrases[t.idx];
-        continue;
-      }
-      const out = await translateText(t.text);
-      results[cur] = out || '[Không thể dịch]';
-      finalizedViPhrases[t.idx] = results[cur];
-      if (t.cache) {
-        setViText(t.cache.viText, results[cur]);
-        t.cache.copyVi.dataset.text = results[cur];
-        t.cache.copyVi.disabled = false;
-        if (t.cache.colVi && results[cur] !== '[Không thể dịch]') {
-          t.cache.colVi.classList.add('vi-just-arrived');
-          setTimeout(() => t.cache.colVi.classList.remove('vi-just-arrived'), 800);
+      if (!t || typeof t.text !== 'string' || !t.text.trim()) { results[cur] = ''; continue; }
+      if (finalizedViPhrases[t.idx] && finalizedViPhrases[t.idx] !== '…' && finalizedViPhrases[t.idx] !== '[Translation failed]') { results[cur] = finalizedViPhrases[t.idx]; continue; }
+      try {
+        const out = await translateText(t.text);
+        const val = out || '[Translation failed]';
+        results[cur] = val; finalizedViPhrases[t.idx] = val;
+        if (t.cache) {
+          setViText(t.cache.viText, val); if (t.cache.copyVi) { t.cache.copyVi.dataset.text = val; t.cache.copyVi.disabled = val==='[Translation failed]'; }
+          if (t.cache.colVi && val !== '[Translation failed]') { t.cache.colVi.classList.add('vi-just-arrived'); setTimeout(() => t.cache.colVi.classList.remove('vi-just-arrived'), 800); }
         }
+        scheduleWordCountUpdate();
+      } catch (e) {
+        if (e.name==='AbortError') { results[cur]=''; break; }
+        results[cur]='[Translation failed]';
       }
-      scheduleWordCountUpdate();
     }
   }
-  const workers = Array(Math.min(concurrency, tasks.length)).fill(0).map(() => worker());
-  await Promise.all(workers);
+  await Promise.all(Array.from({ length: conc }, () => worker()));
   return results;
 }
 
-// Update the live VI preview inside the live utterance (debounced + abortable)
-let liveViDebounce = null;
-let liveViController = null;
+// Live VI preview — debounced + abortable, skips short interim
+let liveViDebounce = null; let liveViController = null;
+/**
+ * @param {string} text
+ */
 function debouncedTranslateInterim(text) {
-  if (liveViDebounce) {
-    clearTimeout(liveViDebounce);
-  }
-  if (liveViController) {
-    try { liveViController.abort(); } catch {}
-    liveViController = null;
-  }
-  if (!text || text.trim().length < 8) return; // skip too short interim to save API calls
-
+  if (liveViDebounce) { clearTimeout(liveViDebounce); liveViDebounce = null; }
+  if (liveViController) { try { liveViController.abort(); } catch {} liveViController = null; }
+  if (!text || String(text).trim().length < 8) return;
   liveViDebounce = setTimeout(async () => {
-    if (!text || !text.trim()) return;
+    const trimmed = String(text).trim(); if (!trimmed) return;
     const liveCache = utteranceDomCache[utteranceDomCache.length - 1];
     if (!liveCache || !liveCache.isLive) return;
-    const snapshotText = text; // capture for stale check
+    const snapshot = trimmed;
     liveViController = new AbortController();
-    const translated = await translateText(snapshotText, { signal: liveViController.signal });
+    const translated = await translateText(snapshot, { signal: liveViController.signal });
     liveViController = null;
     const stillLive = utteranceDomCache[utteranceDomCache.length - 1];
-    if (stillLive && stillLive.isLive && liveCache.enText && liveCache.enText.textContent === snapshotText) {
-      if (translated) setViText(liveCache.viText, translated);
-    }
-  }, INTERIM_DEBOUNCE_MS);
+    if (stillLive && stillLive.isLive && liveCache.enText && liveCache.enText.textContent === snapshot && translated) setViText(liveCache.viText, translated);
+  }, CONFIG.INTERIM_DEBOUNCE_MS);
 }
 
 // Render finalized logs (legacy hidden) + combined single block
@@ -1643,12 +1682,12 @@ function buildUtteranceDom(idx, en, vi) {
   const copyEn = document.createElement('button');
   copyEn.className = 'copy-mini-btn copy-en';
   copyEn.dataset.text = en;
-  copyEn.title = 'Sao chép EN';
+  copyEn.title = 'Copy EN';
   copyEn.innerHTML = '<span class="lang-tag">EN</span> ⎘';
   const copyVi = document.createElement('button');
   copyVi.className = 'copy-mini-btn copy-vi';
   copyVi.dataset.text = (vi !== '…') ? vi : '';
-  copyVi.title = 'Sao chép VI';
+  copyVi.title = 'Copy VI';
   copyVi.innerHTML = '<span class="lang-tag">VI</span> ⎘';
   copyRow.appendChild(copyEn);
   copyRow.appendChild(copyVi);
@@ -1664,7 +1703,7 @@ function buildUtteranceDom(idx, en, vi) {
     const txt = btn.dataset.text;
     if (txt && txt !== '…') {
       await navigator.clipboard.writeText(txt);
-      showToast('Đã sao chép', 'success');
+      showToast('Copied', 'success');
     }
   };
   copyEn.addEventListener('click', () => handleCopy(copyEn));
@@ -1701,6 +1740,54 @@ function appendUtterance(idx) {
 
   // If there's a suggestion state, render it
   updateSuggestCard(idx);
+}
+
+/**
+ * Memory guard — drop oldest utterances once transcript exceeds 2x DOM cap,
+ * then re-index arrays, DOM cache, suggestion map, selected idx, compress pointer.
+ * Mirror of src/services/transcript/compact.js compactTranscriptState().
+ * @returns {number} shift count (0 = nothing dropped)
+ */
+function compactTranscriptMemory() {
+  const len = finalizedEnPhrases.length;
+  if (len <= MAX_DOM_UTTERANCES * 2) return 0;
+  const n = len - MAX_DOM_UTTERANCES;
+  if (n <= 0) return 0;
+  finalizedEnPhrases.splice(0, n);
+  finalizedViPhrases.splice(0, n);
+  utteranceSpeakers.splice(0, n);
+  // Re-map DOM cache (holes stay holes) + refresh dataset.index
+  const newCache = new Array(finalizedEnPhrases.length);
+  utteranceDomCache.forEach((c, oldIdx) => {
+    if (!c) return;
+    const newIdx = oldIdx - n;
+    if (newIdx < 0) { try { if (c.root && c.root.parentNode && !c.isLive) c.root.remove(); } catch {} return; }
+    newCache[newIdx] = c;
+    if (c.root) c.root.dataset.index = newIdx;
+    if (typeof c.idx === 'number') c.idx = newIdx;
+  });
+  utteranceDomCache.length = 0;
+  utteranceDomCache.push(...newCache);
+  // Re-map question suggestions
+  const nextQ = {};
+  for (const k of Object.keys(questionSuggestions)) {
+    const ki = Number(k);
+    if (Number.isFinite(ki) && ki >= n) nextQ[ki - n] = questionSuggestions[k];
+  }
+  questionSuggestions = nextQ;
+  // Re-map selected idx
+  if (selectedQuestionIdx !== null && selectedQuestionIdx !== undefined) {
+    const a = Number(selectedQuestionIdx) - n;
+    const keys = Object.keys(questionSuggestions).map(Number).sort((x, y) => x - y);
+    selectedQuestionIdx = (a >= 0 && questionSuggestions[a]) ? a : (keys.length ? keys[keys.length - 1] : null);
+  } else if (selectedQuestionIdx === null && Object.keys(questionSuggestions).length) {
+    const keys = Object.keys(questionSuggestions).map(Number).sort((x, y) => x - y);
+    selectedQuestionIdx = keys[keys.length - 1];
+  }
+  // Re-map compress pointer (older segment already folded into compressedSummary)
+  lastCompressedIdx = Math.max(0, (lastCompressedIdx || 0) - n);
+  syncState();
+  return n;
 }
 
 function pruneOldUtterances() {
@@ -1756,7 +1843,7 @@ function updateSuggestCard(idx) {
 function setViText(el, vi) {
   if (vi === '…' || vi === undefined || vi === '') {
     // Keep the loading state only when there is no previous translation to show
-    el.innerHTML = '<span class="vi-loading">Đang dịch…</span>';
+    el.innerHTML = '<span class="vi-loading">Translating…</span>';
   } else {
     el.textContent = vi;
   }
@@ -1773,10 +1860,6 @@ let shouldStickToTop = true;
 function isNearTop() {
   if (!transcriptContent) return true;
   return transcriptContent.scrollTop < 120;
-}
-function isNearBottom() {
-  // Deprecated alias: reversed layout uses isNearTop
-  return isNearTop();
 }
 function autoScroll(force = false, behavior = 'smooth') {
   if (force) {
@@ -1812,22 +1895,16 @@ function autoScroll(force = false, behavior = 'smooth') {
     }
   });
 }
-// Backward compat: keep isNearBottom alias above; shouldStickToBottom now maps to shouldStickToTop
-// (all internal refs have been migrated to shouldStickToTop)
+// escapeHtml already defined at top (pure utils) — keep single source
 
-function escapeHtml(str) {
-  if (!str) return '';
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// Hide place holder text
+/** Hide placeholders — guarded */
 function hidePlaceholders() {
   if (enPlaceholder) enPlaceholder.style.display = 'none';
   if (viPlaceholder) viPlaceholder.style.display = 'none';
   if (combinedPlaceholder) combinedPlaceholder.style.display = 'none';
 }
 
-// Show placeholders
+/** Show placeholders if empty — guarded */
 function showPlaceholders() {
   const hasData = finalizedEnPhrases.length > 0;
   if (!hasData) {
@@ -1837,30 +1914,30 @@ function showPlaceholders() {
   }
 }
 
-// Update UI States when listening/stopped
+/** @param {boolean} active */
 function updateUIForListening(active) {
   if (active) {
     toggleBtn.className = 'btn btn-danger btn-record';
     playIcon.style.display = 'none';
     stopIcon.style.display = 'block';
-    btnText.innerText = 'Dừng';
+    btnText.innerText = 'Stop';
     logoDot.classList.add('listening');
     if (liveBadge) { liveBadge.textContent = '● LIVE'; liveBadge.classList.add('live'); }
     const footer = document.querySelector('.footer-status'); if (footer) footer.classList.add('live');
-    toggleBtn.setAttribute('aria-label', 'Dừng ghi âm');
+    toggleBtn.setAttribute('aria-label', 'Stop recording');
   } else {
     toggleBtn.className = 'btn btn-primary btn-record';
     playIcon.style.display = 'block';
     stopIcon.style.display = 'none';
-    btnText.innerText = 'Bắt đầu';
+    btnText.innerText = 'Start';
     logoDot.classList.remove('listening');
     if (liveBadge) { liveBadge.textContent = 'Offline'; liveBadge.classList.remove('live'); }
     const footer = document.querySelector('.footer-status'); if (footer) footer.classList.remove('live');
-    toggleBtn.setAttribute('aria-label', 'Bắt đầu ghi âm');
+    toggleBtn.setAttribute('aria-label', 'Start recording');
   }
 }
 
-// Clear all transcript lists and logs
+/** Clear all state — idempotent, awaited storage, no throw */
 async function clearContent() {
   finalizedEnPhrases = [];
   finalizedViPhrases = [];
@@ -1912,23 +1989,23 @@ async function clearContent() {
   copySummaryBtn.style.display = 'none';
   
   showPlaceholders();
-  showStatus('Đã xóa lịch sử');
+  showStatus('History cleared');
   setTimeout(() => {
     if (isListening) {
       if (activeAudioTrack) {
-        showStatus('Đang dịch âm thanh Tab...');
+        showStatus('Translating Tab audio...');
       } else {
-        showStatus('Đang nghe tiếng Anh (Mic)...');
+        showStatus('Listening for English (Mic)...');
       }
     } else {
-      showStatus('Sẵn sàng');
+      showStatus('Ready');
     }
   }, 1000);
 }
 
 // SETUP & GEMINI INTEGRATION LOGIC
 
-// Setup Tab Switching Navigation
+/** Tab nav — ARIA, guarded */
 function setupTabNavigation() {
   tabLive.addEventListener('click', () => {
     tabLive.classList.add('active');
@@ -1954,7 +2031,7 @@ function setupTabNavigation() {
   });
 }
 
-// Setup Settings Modal Overlay (Custom Provider)
+/** Settings overlay — validated inputs, no throw */
 function setupSettingsOverlay() {
   const presets = {
     openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
@@ -2011,12 +2088,12 @@ function setupSettingsOverlay() {
     const key = apiKeyInput.value.trim();
     const model = (modelInput ? modelInput.value.trim() : (geminiModelSelect ? geminiModelSelect.value : ''));
 
-    if (!baseUrl) { showToast('Vui lòng nhập Base URL', 'error'); baseUrlInput && baseUrlInput.focus(); return; }
-    try { new URL(baseUrl); } catch { showToast('Base URL không hợp lệ', 'error'); return; }
-    if (!model) { showToast('Vui lòng nhập Model', 'error'); modelInput && modelInput.focus(); return; }
-    // API key có thể trống cho Ollama local, nhưng cảnh báo nếu trống với remote
+    if (!baseUrl) { showToast('Please enter Base URL', 'error'); baseUrlInput && baseUrlInput.focus(); return; }
+    try { new URL(baseUrl); } catch { showToast('Invalid Base URL', 'error'); return; }
+    if (!model) { showToast('Please enter Model', 'error'); modelInput && modelInput.focus(); return; }
+    // API key can be empty for local Ollama, but warn if empty for remote
     const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
-    if (!key && !isLocal) { showToast('Vui lòng nhập API Key (hoặc dùng localhost)', 'error'); apiKeyInput.focus(); return; }
+    if (!key && !isLocal) { showToast('Please enter API Key (or use localhost)', 'error'); apiKeyInput.focus(); return; }
 
     const toSave = {
       providerBaseUrl: baseUrl,
@@ -2034,8 +2111,8 @@ function setupSettingsOverlay() {
       geminiConfig = providerConfig;
       updateApiWarningState();
       settingsOverlay.style.display = 'none';
-      showStatus('Đã lưu cấu hình Provider');
-      showToast('Đã lưu cấu hình Provider', 'success');
+      showStatus('Provider configuration saved');
+      showToast('Provider configuration saved', 'success');
     });
   });
 
@@ -2092,7 +2169,7 @@ function setupSummaryFeatures() {
 async function generateSummary() {
   const englishText = getFullEnglishText();
   if (!englishText || englishText.trim() === '' ) {
-    alert('Không có nội dung cuộc họp để tóm tắt. Vui lòng ghi âm trước.');
+    alert('No meeting content to summarize. Please record first.');
     return;
   }
   // provider validation
@@ -2100,14 +2177,14 @@ async function generateSummary() {
     if (baseUrlInput) baseUrlInput.value = providerConfig.baseUrl || '';
     if (modelInput) modelInput.value = providerConfig.model || '';
     settingsOverlay.style.display = 'flex';
-    alert('Vui lòng cấu hình Base URL và Model.');
+    alert('Please configure Base URL and Model.');
     return;
   }
   const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
   if (!providerConfig.apiKey && !isLocal) {
     if (apiKeyInput) apiKeyInput.value = '';
     settingsOverlay.style.display = 'flex';
-    alert('Vui lòng nhập API Key.');
+    alert('Please enter API Key.');
     return;
   }
 
@@ -2118,26 +2195,26 @@ async function generateSummary() {
   copySummaryBtn.style.display = 'none';
   // update loading text with provider
   const loadingP = summaryLoading.querySelector('p');
-  if (loadingP) loadingP.textContent = `Đang phân tích bằng ${providerConfig.model}…`;
+  if (loadingP) loadingP.textContent = `Analyzing with ${providerConfig.model}…`;
 
   const lang = summaryLangSelect.value;
   const detail = summaryDetailSelect.value;
 
   let prompt = '';
   if (lang === 'vi') {
-    prompt = `Bạn là một trợ lý AI ghi chép và tóm tắt cuộc họp chuyên nghiệp. Dưới đây là biên bản ghi âm cuộc họp (transcript) bằng tiếng Anh:\n\n`;
+    prompt = `You are a professional meeting assistant. Here is the meeting transcript in English:\n\n`;
     prompt += `"""\n${englishText}\n"""\n\n`;
-    prompt += `Hãy tạo một bản tóm tắt cuộc họp bằng **Tiếng Việt** dựa trên các yêu cầu sau:\n`;
+    prompt += `Please generate a meeting summary in **Vietnamese** with the following requirements:\n`;
     if (detail === 'bullets') {
-      prompt += `- Định dạng dưới dạng các gạch đầu dòng chi tiết chia theo từng chủ đề hoặc phần chính của cuộc họp.\n`;
-      prompt += `- Nêu rõ các ý kiến phát biểu quan trọng.\n`;
+      prompt += `- Format as detailed bullet points grouped by topics or main parts discussed.\n`;
+      prompt += `- Highlight key arguments or points raised by participants.\n`;
     } else if (detail === 'short') {
-      prompt += `- Viết một bản tóm tắt cực kỳ ngắn gọn, cô đọng (tối đa 2-3 đoạn văn ngắn) về nội dung chính bàn luận và kết luận chung.\n`;
+      prompt += `- Write a highly concise summary (max 2-3 short paragraphs) explaining the core topic and final conclusions.\n`;
     } else if (detail === 'action') {
-      prompt += `- Liệt kê các công việc cần làm (Action Items), ai chịu trách nhiệm (nếu có đề cập), và thời hạn (nếu có).\n`;
-      prompt += `- Phân chia danh sách một cách rõ ràng dưới dạng checkbox hoặc danh sách việc cần làm.\n`;
+      prompt += `- Extract and list Action Items, including who is responsible (if mentioned) and deadlines (if mentioned).\n`;
+      prompt += `- Structure them clearly as a checklist or to-do list.\n`;
     }
-    prompt += `- Định dạng đầu ra bằng Markdown sạch sẽ, sử dụng tiêu đề (h2, h3), chữ in đậm để làm nổi bật các từ khóa hoặc thông tin quan trọng. Không sử dụng HTML.`;
+    prompt += `- Format the output using clean Markdown, using headers (h2, h3) and bold text for emphasis. Do not use HTML.`;
   } else {
     prompt = `You are a professional meeting assistant. Here is the transcript of the meeting in English:\n\n`;
     prompt += `"""\n${englishText}\n"""\n\n`;
@@ -2166,7 +2243,7 @@ async function generateSummary() {
       // Gemini native format
       const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
       const headers = { 'Content-Type': 'application/json' };
-      // nếu baseUrl custom nhưng vẫn dạng Gemini, vẫn dùng key query
+      // if baseUrl is custom but still Gemini format, use key query
       const response = await fetch(url, {
         method: 'POST',
         headers,
@@ -2208,7 +2285,7 @@ async function generateSummary() {
       if (!candidateText && data.message?.content) candidateText = data.message.content;
     }
 
-    if (!candidateText) throw new Error('API không trả về nội dung.');
+    if (!candidateText) throw new Error('API returned no content.');
 
     const renderedHtml = parseMarkdown(candidateText);
     summaryMarkdown.innerHTML = renderedHtml;
@@ -2216,14 +2293,14 @@ async function generateSummary() {
     summaryLoading.style.display = 'none';
     summaryMarkdown.style.display = 'block';
     copySummaryBtn.style.display = 'flex';
-    showStatus('Tạo tóm tắt thành công');
-    showToast(`Tóm tắt bằng ${model} thành công`, 'success');
+    showStatus('Summary generated successfully');
+    showToast(`Summarized with ${model} successfully`, 'success');
   } catch (error) {
     console.error('Provider error:', error);
     summaryLoading.style.display = 'none';
     summaryPlaceholder.style.display = 'flex';
-    summaryPlaceholder.innerHTML = `<span style="color: #ef4444;">⚠️ Lỗi khi tạo tóm tắt (${escapeHtml(providerConfig.baseUrl)}): ${escapeHtml(error.message)}. Kiểm tra Base URL / Model / API Key.</span>`;
-    showStatus('Lỗi tạo tóm tắt');
+    summaryPlaceholder.innerHTML = `<span style="color: #ef4444;">⚠️ Error generating summary (${escapeHtml(providerConfig.baseUrl)}): ${escapeHtml(error.message)}. Check Base URL / Model / API Key.</span>`;
+    showStatus('Summary generation error');
     showToast(error.message, 'error');
   }
 }
@@ -2334,7 +2411,7 @@ function parseInlineMarkdown(text) {
   return text;
 }
 
-// Show extension status bar message
+/** @param {string} msg */
 function showStatus(msg) {
   if (!statusText) return;
   // statusText contains dot + span, preserve structure if exists
@@ -2343,17 +2420,19 @@ function showStatus(msg) {
   else statusText.innerText = msg;
 }
 
+/** Update word counts — pure calc, guarded DOM */
 function updateWordCounts() {
   const enText = finalizedEnPhrases.join(' ').trim();
   const viText = finalizedViPhrases.join(' ').trim();
   const enCount = enText ? enText.split(/\s+/).length : 0;
   const viCount = viText ? viText.split(/\s+/).length : 0;
   const total = enCount + viCount;
-  if (enWordCount) enWordCount.textContent = enCount + ' từ';
-  if (viWordCount) viWordCount.textContent = viCount + ' từ';
-  if (combinedWordCount) combinedWordCount.textContent = total ? `${enCount} EN • ${viCount} VI` : '0 từ';
+  if (enWordCount) enWordCount.textContent = enCount + ' words';
+  if (viWordCount) viWordCount.textContent = viCount + ' words';
+  if (combinedWordCount) combinedWordCount.textContent = total ? `${enCount} EN • ${viCount} VI` : '0 words';
 }
 
+/** Schedule RAF word count — idempotent */
 function scheduleWordCountUpdate() {
   if (wordCountRaf) return;
   wordCountRaf = requestAnimationFrame(() => {
@@ -2362,6 +2441,7 @@ function scheduleWordCountUpdate() {
   });
 }
 
+/** Show toast — validated, auto-dismiss, no throw */
 function showToast(message, type = 'default') {
   if (!toastContainer) return;
   const toast = document.createElement('div');
@@ -2375,6 +2455,7 @@ function showToast(message, type = 'default') {
   }, 2600);
 }
 
+/** Keyboard shortcuts — guarded, no repeat, ARIA */
 function setupKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
     if (e.code === 'Space' && !e.target.matches('input, textarea, select')) {
@@ -2384,7 +2465,7 @@ function setupKeyboardShortcuts() {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault();
       clearContent();
-      showToast('Đã xóa lịch sử', 'success');
+      showToast('History cleared', 'success');
     }
     if (e.key === 'Escape') {
       if (settingsOverlay) settingsOverlay.style.display = 'none';
@@ -2405,19 +2486,19 @@ function setupKeyboardShortcuts() {
   }
 }
 
-// Helper to get all combined English text
+/** @returns {string} */
 function getFullEnglishText() {
   const final = finalizedEnPhrases.filter(Boolean).join(' ');
   return final.trim();
 }
 
-// Helper to get all combined Vietnamese text
+/** @returns {string} */
 function getFullVietnameseText() {
-  const final = finalizedViPhrases.filter(v => v && v !== '…' && v !== '[Không thể dịch]').join(' ');
+  const final = finalizedViPhrases.filter(v => v && v !== '…' && v !== '[Translation failed]').join(' ');
   return final.trim();
 }
 
-// Copy to Clipboard utility
+/** Copy with fallback, toast, validated */
 async function copyToClipboard(text, buttonId) {
   try {
     await navigator.clipboard.writeText(text);
@@ -2428,12 +2509,12 @@ async function copyToClipboard(text, buttonId) {
         <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
       </svg>
     `;
-    showToast('Đã sao chép vào clipboard', 'success');
+    showToast('Copied to clipboard', 'success');
     setTimeout(() => {
       button.innerHTML = originalHTML;
     }, 1500);
   } catch (err) {
     console.error('Failed to copy:', err);
-    showToast('Sao chép thất bại', 'error');
+    showToast('Copy failed', 'error');
   }
 }

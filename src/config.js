@@ -1,0 +1,28 @@
+export const CONFIG = Object.freeze({
+  // tuned after evaluation: slightly longer silence to reduce premature cuts, debounce faster for responsiveness
+  SILENCE_THRESHOLD: 900,
+  MAX_INTERIM_LENGTH: 80,
+  MAX_DOM_UTTERANCES: 120,
+  INTERIM_DEBOUNCE_MS: 420,
+  TRANSLATION_CACHE_MAX: 500,
+  MAX_CONCURRENT_TRANSLATE: 3,
+  COMPRESS_INTERVAL_MS: 5 * 60 * 1000,
+  COMPRESS_RECENT_KEEP: 10,
+  COMPRESS_MAX_CHARS: 3000,
+  SPEAKER_VAD_RMS_THRESH: 0.012,
+  SPEAKER_MIN_PAUSE_MS: 350,
+  SPEAKER_MIN_SPEECH_MS: 600,
+  SPEAKER_CENTROID_DIFF: 320,
+  TRANSLATE_TIMEOUT_MS: 8500,
+  SUGGEST_MAX_RETRIES: 2,
+  STORAGE_KEYS: Object.freeze({
+    suggestEnabled: 'suggestEnabled',
+    compressEnabled: 'compressEnabled',
+    compressedSummary: 'compressedSummary',
+    lastCompressedIdx: 'lastCompressedIdx',
+    suggestContextPrompt: 'suggestContextPrompt',
+    providerBaseUrl: 'providerBaseUrl',
+    providerApiKey: 'providerApiKey',
+    providerModel: 'providerModel',
+  }),
+});

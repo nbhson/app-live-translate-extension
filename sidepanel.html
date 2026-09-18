@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,11 +7,15 @@
   <title>Live Translate (EN → VI)</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <!-- Fonts non-blocking: display=swap + print media trick -->
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+  <noscript><link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
   <link rel="stylesheet" href="sidepanel.css">
+  <!-- Early perf mark -->
+  <script>performance.mark('sidepanel-html-start')</script>
 </head>
 <body>
-  <a href="#liveTabContent" class="skip-link">Bỏ qua đến nội dung chính</a>
+  <a href="#liveTabContent" class="skip-link">Skip to main content</a>
 
   <!-- Header -->
   <header class="app-header" role="banner">
@@ -27,48 +31,48 @@
     </div>
     <div class="header-actions">
       <span class="live-badge" id="liveBadge" aria-live="polite">Offline</span>
-      <button id="settingsBtn" class="btn btn-icon" title="Cấu hình Gemini (Ctrl+,)" aria-label="Mở cài đặt Gemini">
+      <button id="settingsBtn" class="btn btn-icon" title="Configure AI Provider (Ctrl+,)" aria-label="Open AI Provider settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
       </button>
     </div>
   </header>
 
   <!-- Control Bar -->
-  <div class="control-bar" role="toolbar" aria-label="Điều khiển ghi âm">
+  <div class="control-bar" role="toolbar" aria-label="Recording controls">
     <label class="source-select-wrap" for="audioSourceSelect">
-      <span class="sr-only">Chọn nguồn âm thanh</span>
+      <span class="sr-only">Select audio source</span>
       <svg viewBox="0 0 24 24" class="select-icon" aria-hidden="true"><path d="M12 3a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V7a4 4 0 0 0-4-4zm0 12a3 3 0 0 1-3-3V7a3 3 0 0 1 6 0v5a3 3 0 0 1-3 3zm-7-3a7 7 0 0 0 14 0h-2a5 5 0 0 1-10 0H5zm7 7v3h-2v-3h2z"/></svg>
-      <select id="audioSourceSelect" class="source-select" title="Chọn nguồn âm thanh">
+      <select id="audioSourceSelect" class="source-select" title="Select audio source">
         <option value="tab">🌐 Tab Audio</option>
         <option value="mic">🎙️ Microphone</option>
       </select>
     </label>
 
-    <button id="toggleBtn" class="btn btn-primary btn-record" title="Bắt đầu ghi âm (Space)" aria-label="Bắt đầu ghi âm">
+    <button id="toggleBtn" class="btn btn-primary btn-record" title="Start recording (Space)" aria-label="Start recording">
       <span class="btn-icon-wrap">
         <svg id="playIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         <svg id="stopIcon" viewBox="0 0 24 24" style="display:none" aria-hidden="true"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
       </span>
-      <span id="btnText">Bắt đầu</span>
+      <span id="btnText">Start</span>
       <span class="kbd-hint" aria-hidden="true">SPACE</span>
     </button>
 
-    <button id="clearBtn" class="btn btn-ghost" title="Xóa nội dung (Ctrl+K)" aria-label="Xóa toàn bộ nội dung">
+    <button id="clearBtn" class="btn btn-ghost" title="Clear content (Ctrl+K)" aria-label="Clear all content">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4V3H9v1H4v2h16V4zM6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h2v10H8V9zm4 0h2v10h-2V9z"/></svg>
-      <span class="btn-label-sm">Xóa</span>
+      <span class="btn-label-sm">Clear</span>
     </button>
   </div>
 
   <!-- Tabs -->
-  <nav class="tabs-nav" role="tablist" aria-label="Chế độ xem">
+  <nav class="tabs-nav" role="tablist" aria-label="View mode">
     <button id="tabLive" class="tab-btn active" role="tab" aria-selected="true" aria-controls="liveTabContent">
       <span class="tab-icon">🌐</span>
-      <span>Dịch trực tiếp</span>
+      <span>Live Translate</span>
       <span class="tab-indicator"></span>
     </button>
     <button id="tabSummary" class="tab-btn" role="tab" aria-selected="false" aria-controls="summaryTabContent">
       <span class="tab-icon">📝</span>
-      <span>Tóm tắt AI</span>
+      <span>AI Summary</span>
       <span class="tab-indicator"></span>
     </button>
   </nav>
@@ -81,40 +85,40 @@
           <span class="flag-icon" aria-hidden="true">🌐</span>
           <h2 id="transcript-title">Transcript</h2>
           <span class="panel-subtitle">EN <span aria-hidden="true">→</span> VI</span>
-          <span class="word-count" id="combinedWordCount" aria-live="polite">0 từ</span>
-          <span class="word-count" id="enWordCount" style="display:none">0 từ</span>
-          <span class="word-count" id="viWordCount" style="display:none">0 từ</span>
+          <span class="word-count" id="combinedWordCount" aria-live="polite">0 words</span>
+          <span class="word-count" id="enWordCount" style="display:none">0 words</span>
+          <span class="word-count" id="viWordCount" style="display:none">0 words</span>
         </div>
         <div class="panel-actions">
-          <label class="suggest-toggle-wrap" title="Bật/tắt gợi ý trả lời AI">
+          <label class="suggest-toggle-wrap" title="Toggle AI suggested answers">
             <input type="checkbox" id="suggestToggle" checked>
             <span class="suggest-toggle-label">💡 AI</span>
           </label>
-          <label class="suggest-toggle-wrap compress-toggle-wrap" title="Nén lịch sử mỗi 5 phút bằng AI (tiết kiệm token, giữ ngữ cảnh dài)">
+          <label class="suggest-toggle-wrap compress-toggle-wrap" title="Compress history every 5m with AI (save tokens, keep long context)">
             <input type="checkbox" id="compressToggle">
-            <span>🗜️ Nén 5p</span>
+            <span>🗜️ Compress 5m</span>
             <span id="compressBadge" class="compress-badge" style="display:none"></span>
           </label>
-          <span class="auto-badge" title="Dịch tự động bằng Google Translate">Auto</span>
-          <button id="copyEnBtn" class="copy-pill-btn copy-pill-en" title="Sao chép tiếng Anh" aria-label="Sao chép tiếng Anh">
+          <span class="auto-badge" title="Auto-translate via Google Translate">Auto</span>
+          <button id="copyEnBtn" class="copy-pill-btn copy-pill-en" title="Copy English" aria-label="Copy English">
             <span class="pill-label">EN</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
           </button>
-          <button id="copyViBtn" class="copy-pill-btn copy-pill-vi" title="Sao chép tiếng Việt" aria-label="Sao chép tiếng Việt">
+          <button id="copyViBtn" class="copy-pill-btn copy-pill-vi" title="Copy Vietnamese" aria-label="Copy Vietnamese">
             <span class="pill-label">VI</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
           </button>
-          <button id="copyAllBtn" class="copy-pill-btn copy-pill-all" title="Sao chép tất cả (EN+VI)" aria-label="Sao chép tất cả">
+          <button id="copyAllBtn" class="copy-pill-btn copy-pill-all" title="Copy all (EN+VI)" aria-label="Copy all">
             <span class="pill-label">All</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 2H9c-1.1 0-2 .9-2 2v4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H9V4h8v10zm4 4h-4v-4h4v4z"/></svg>
           </button>
         </div>
       </div>
-      <div class="panel-content scrollable" id="transcriptContent" tabindex="0" aria-label="Nội dung transcript tiếng Anh và bản dịch tiếng Việt">
+      <div class="panel-content scrollable" id="transcriptContent" tabindex="0" aria-label="English transcript and Vietnamese translation">
         <div class="placeholder-text" id="combinedPlaceholder">
           <div class="placeholder-illust">🎤</div>
-          <p class="placeholder-title">Sẵn sàng ghi âm</p>
-          <p class="placeholder-desc">Nhấp <strong>Bắt đầu</strong> và nói tiếng Anh. Mỗi câu tiếng Anh sẽ hiện ngay phía trên bản dịch tiếng Việt.</p>
+          <p class="placeholder-title">Ready to record</p>
+          <p class="placeholder-desc">Click <strong>Start</strong> and speak English. Each English sentence appears above its Vietnamese translation.</p>
           <div class="placeholder-hints">
             <span class="hint-chip">🌐 Tab Audio</span>
             <span class="hint-chip">🎙️ Micro</span>
@@ -140,25 +144,37 @@
     </section>
 
     <!-- Suggestion Dock – separated like mockup [Image 1] -->
-    <section class="suggestion-dock" id="suggestionDock" aria-label="Gợi ý trả lời">
+    <section class="suggestion-dock" id="suggestionDock" aria-label="Suggested Answers">
       <div class="dock-header">
         <div class="dock-title">
           <span class="q-icon">?</span>
-          <span>Gợi ý trả lời</span>
-          <span class="q-count" id="qCountBadge">0 câu hỏi</span>
+          <span>Suggested Answers</span>
+          <span class="q-count" id="qCountBadge">0 questions</span>
         </div>
-        <div class="dock-tabs" role="tablist" aria-label="Chế độ gợi ý">
-          <button class="dock-tab active" data-view="both" role="tab" aria-selected="true">Cả 2</button>
-          <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Cấu trúc</button>
-          <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Câu hoàn chỉnh</button>
-          <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Xóa gợi ý">Xóa</button>
-          <button class="dock-tab ghost" id="manualCompressBtn" title="Nén ngay lịch sử chưa nén">Nén ngay</button>
+        <div class="dock-tabs" role="tablist" aria-label="Suggestion mode">
+          <button class="dock-tab active" data-view="both" role="tab" aria-selected="true">Both</button>
+          <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Structure</button>
+          <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Full sentences</button>
+          <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Clear suggestions">Clear</button>
+          <button class="dock-tab ghost" id="manualCompressBtn" title="Compress pending history now">Compress now</button>
         </div>
       </div>
+      <!-- Context Prompt for suggestions (not used for summary) -->
+      <div class="context-prompt-wrap" id="contextPromptWrap">
+        <label for="contextPromptInput" class="context-prompt-label">
+          <span class="cp-icon">🎯</span> Suggestion Context
+          <span class="context-prompt-badge" id="contextPromptBadge" style="display:none">Saved</span>
+        </label>
+        <div class="context-prompt-row">
+          <textarea id="contextPromptInput" class="context-prompt-input" rows="2" maxlength="600" placeholder="e.g. daily meeting with dev team • frontend interview call • product demo for client..."></textarea>
+          <button id="clearContextPromptBtn" class="context-clear-btn" title="Clear context" aria-label="Clear context">✕</button>
+        </div>
+        <span class="context-prompt-hint">Used only for answer suggestions — does not affect AI summary</span>
+      </div>
       <div class="compress-status" id="compressStatus" style="display:none"></div>
-      <div class="question-pills" id="questionPills" role="tablist" aria-label="Danh sách câu hỏi"></div>
+      <div class="question-pills" id="questionPills" role="tablist" aria-label="Question list"></div>
       <div class="suggestion-body scrollable" id="suggestionBody">
-        <div class="suggest-empty" id="suggestEmpty">Chưa có câu hỏi nào. Khi AI phát hiện câu hỏi, gợi ý sẽ hiện ở đây.</div>
+        <div class="suggest-empty" id="suggestEmpty">No questions yet. When AI detects a question, suggestions will appear here.</div>
       </div>
     </section>
   </main>
@@ -168,26 +184,26 @@
     <div class="api-warning-card" id="apiWarningCard" style="display:none" role="alert">
       <div class="warning-icon" aria-hidden="true">⚠️</div>
       <div class="warning-text">
-        <h3>Chưa cấu hình AI Provider</h3>
-        <p>Thêm Base URL, Model và API Key để dùng tóm tắt AI.</p>
+        <h3>AI Provider not configured</h3>
+        <p>Add Base URL, Model and API Key to use AI summary.</p>
       </div>
-      <button id="configNowBtn" class="btn btn-primary btn-sm">Cấu hình ngay</button>
+      <button id="configNowBtn" class="btn btn-primary btn-sm">Configure now</button>
     </div>
 
     <div class="summary-config-panel">
       <div class="form-row summary-compact-row">
-        <select id="summaryLang" class="form-select" aria-label="Ngôn ngữ tóm tắt">
+        <select id="summaryLang" class="form-select" aria-label="Summary language">
           <option value="vi">🇻🇳 VI</option>
           <option value="en">🇬🇧 EN</option>
         </select>
-        <select id="summaryDetail" class="form-select" aria-label="Kiểu tóm tắt">
-          <option value="bullets">📝 Chi tiết</option>
-          <option value="short">⚡ Ngắn</option>
+        <select id="summaryDetail" class="form-select" aria-label="Summary type">
+          <option value="bullets">📝 Detailed</option>
+          <option value="short">⚡ Short</option>
           <option value="action">🎯 Actions</option>
         </select>
-        <button id="generateSummaryBtn" class="btn btn-primary btn-sm btn-generate" aria-label="Tạo tóm tắt bằng AI">
+        <button id="generateSummaryBtn" class="btn btn-primary btn-sm btn-generate" aria-label="Generate AI summary">
           <svg viewBox="0 0 24 24" class="sparkle-icon" aria-hidden="true"><path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7zm2.85 11.1l-.85.6V16h-4v-2.3l-.85-.6C8.74 12.16 8 10.64 8 9c0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.64-.74 3.16-2.15 4.1z"/></svg>
-          <span>Tóm tắt</span>
+          <span>Summarize</span>
         </button>
       </div>
     </div>
@@ -196,10 +212,10 @@
       <div class="panel-header">
         <div class="panel-title">
           <svg viewBox="0 0 24 24" class="doc-icon" aria-hidden="true"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
-          <h2 id="summary-title">Kết quả tóm tắt</h2>
+          <h2 id="summary-title">Summary result</h2>
         </div>
         <div class="panel-actions">
-          <button id="copySummaryBtn" class="btn-action-icon" title="Sao chép tóm tắt" aria-label="Sao chép tóm tắt" style="display:none">
+          <button id="copySummaryBtn" class="btn-action-icon" title="Copy summary" aria-label="Copy summary" style="display:none">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
           </button>
         </div>
@@ -207,14 +223,14 @@
       <div class="panel-content scrollable" id="summaryContent">
         <div class="placeholder-text" id="summaryPlaceholder">
           <div class="placeholder-illust">✨</div>
-          <p class="placeholder-title">Chưa có tóm tắt</p>
-          <p class="placeholder-desc">Sau khi có transcript, bấm “Tạo tóm tắt” để Gemini phân tích.</p>
+          <p class="placeholder-title">No summary yet</p>
+          <p class="placeholder-desc">Once you have a transcript, click “Summarize” to analyze with Gemini.</p>
         </div>
         <div class="markdown-body" id="summaryMarkdown" style="display:none"></div>
         <div class="loading-container" id="summaryLoading" style="display:none" role="status" aria-live="polite">
           <div class="spinner" aria-hidden="true"></div>
-          <p>Gemini đang phân tích…</p>
-          <span class="loading-sub">Có thể mất 5–10 giây</span>
+          <p>Gemini is analyzing…</p>
+          <span class="loading-sub">May take 5–10 seconds</span>
         </div>
       </div>
     </section>
@@ -224,12 +240,12 @@
   <footer class="app-footer" role="contentinfo">
     <div class="footer-status" id="statusText" aria-live="polite" aria-atomic="true">
       <span class="status-dot"></span>
-      <span>Sẵn sàng</span>
+      <span>Ready</span>
     </div>
-    <label class="toggle-switch" title="Tự động cuộn xuống khi có nội dung mới">
+    <label class="toggle-switch" title="Auto-scroll when new content arrives">
       <input type="checkbox" id="autoScrollCheck" checked>
       <span class="slider" aria-hidden="true"></span>
-      <span class="toggle-label">Tự động cuộn</span>
+      <span class="toggle-label">Auto-scroll</span>
     </label>
   </footer>
 
@@ -242,10 +258,10 @@
       <div class="overlay-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
       </div>
-      <h3 id="perm-title">Cần quyền Microphone</h3>
-      <p>Cho phép truy cập micro để nhận diện giọng nói. Bạn có thể đổi lại trong cài đặt Chrome.</p>
-      <button class="btn btn-primary btn-block" id="grantPermissionBtn">Mở trang cấp quyền</button>
-      <button class="btn btn-ghost btn-block" onclick="document.getElementById('permissionOverlay').style.display='none'">Để sau</button>
+      <h3 id="perm-title">Microphone permission required</h3>
+      <p>Allow microphone access for speech recognition. You can change this in Chrome settings.</p>
+      <button class="btn btn-primary btn-block" id="grantPermissionBtn">Open permission page</button>
+      <button class="btn btn-ghost btn-block" onclick="document.getElementById('permissionOverlay').style.display='none'">Later</button>
     </div>
   </div>
 
@@ -253,15 +269,15 @@
   <div class="overlay" id="settingsOverlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="settings-title">
     <div class="overlay-card settings-card">
       <div class="settings-header">
-        <h3 id="settings-title">Cấu hình AI Provider</h3>
-        <button id="closeSettingsBtn" class="btn-close" title="Đóng (Esc)" aria-label="Đóng">×</button>
+        <h3 id="settings-title">AI Provider Configuration</h3>
+        <button id="closeSettingsBtn" class="btn-close" title="Close (Esc)" aria-label="Close">×</button>
       </div>
       <div class="settings-body">
         <div class="form-group-vertical">
           <label for="baseUrlInput">Base URL <span class="req">*</span></label>
           <input type="text" id="baseUrlInput" placeholder="https://api.openai.com/v1" class="form-input" autocomplete="off" spellcheck="false">
-          <span class="help-text">Ví dụ: <code>https://api.openai.com/v1</code> • <code>https://generativelanguage.googleapis.com/v1beta</code> • <code>http://localhost:11434/v1</code></span>
-          <div class="preset-chips" aria-label="Preset nhanh">
+          <span class="help-text">e.g. <code>https://api.openai.com/v1</code> • <code>https://generativelanguage.googleapis.com/v1beta</code> • <code>http://localhost:11434/v1</code></span>
+          <div class="preset-chips" aria-label="Quick presets">
             <button type="button" class="preset-chip" data-preset="openai">OpenAI</button>
             <button type="button" class="preset-chip" data-preset="gemini">Gemini</button>
             <button type="button" class="preset-chip" data-preset="ollama">Ollama</button>
@@ -271,10 +287,10 @@
         <div class="form-group-vertical">
           <label for="apiKeyInput">API Key <span class="req">*</span></label>
           <div class="input-with-toggle">
-            <input type="password" id="apiKeyInput" placeholder="sk-... / AIza... / ollama (để trống nếu local)" class="form-input" autocomplete="off" spellcheck="false">
-            <button id="toggleApiKeyVisibilityBtn" class="btn-toggle-visibility" type="button" title="Hiện/ẩn" aria-label="Hiện hoặc ẩn API Key">👁️</button>
+            <input type="password" id="apiKeyInput" placeholder="sk-... / AIza... / ollama (leave empty for local)" class="form-input" autocomplete="off" spellcheck="false">
+            <button id="toggleApiKeyVisibilityBtn" class="btn-toggle-visibility" type="button" title="Show/Hide" aria-label="Show or hide API Key">👁️</button>
           </div>
-          <span class="help-text">Với Ollama local có thể để trống.</span>
+          <span class="help-text">Leave empty for local Ollama.</span>
         </div>
         <div class="form-group-vertical">
           <label for="modelInput">Model <span class="req">*</span></label>
@@ -287,18 +303,23 @@
             <option value="llama3.1"></option>
             <option value="qwen2.5"></option>
           </datalist>
-          <span class="help-text">Nhập chính xác tên model của provider.</span>
+          <span class="help-text">Enter the exact provider model name.</span>
         </div>
         <!-- Legacy hidden select for compat -->
         <select id="geminiModelSelect" style="display:none"><option value="gemini-2.5-flash"></option></select>
       </div>
       <div class="settings-footer">
-        <button id="saveSettingsBtn" class="btn btn-primary btn-block">Lưu cấu hình</button>
-        <p class="help-text center" style="margin-top:8px">Hỗ trợ OpenAI-compatible API. Với Gemini dùng format <code>generativelanguage</code>.</p>
+        <button id="saveSettingsBtn" class="btn btn-primary btn-block">Save configuration</button>
+        <p class="help-text center" style="margin-top:8px">Supports OpenAI-compatible API. For Gemini use <code>generativelanguage</code> format.</p>
       </div>
     </div>
   </div>
 
-  <script src="sidepanel.js"></script>
+  <!-- Defer heavy scripts: non-blocking first paint -->
+  <!-- compromise 343KB only needed for isQuestion NLP, defer + lazy -->
+  <script src="lib/compromise.min.js" defer></script>
+  <script src="sidepanel.js" defer></script>
+  <!-- ESM build dist/main.js loads on demand (idle), not auto-loaded to save 41KB
+  <script type="module" src="dist/main.js" async></script> -->
 </body>
 </html>
