@@ -46,10 +46,10 @@ Task: Use BOTH compressed history, recent conversation${contextHint ? ' and user
 Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
   }
 
-  const ctx = truncateForPrompt(ctxArr.slice(-4), 1000);
+  const ctx = truncateForPrompt(ctxArr, 6000);
   return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
 
-${contextHint}Context (last utterances): """${ctx}"""
+${contextHint}Conversation history (all utterances, budget 6000 chars): """${ctx}"""
 
 Question: """${q}"""
 

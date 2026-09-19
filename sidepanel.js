@@ -460,11 +460,11 @@ function getContextSnapshot() {
     const compPreview = comp.length > COMPRESS_MAX_CHARS ? comp.slice(-COMPRESS_MAX_CHARS) : comp;
     liveCtx = `Compressed history (${compPreview.length} chars, will be truncated to ${COMPRESS_MAX_CHARS} max):\n${compPreview || '(none)'}\n\nRecent ${liveCount} utterances (budget 1500 chars):\n${recentCtx || '(empty)'}`;
   } else {
-    const recent = en.slice(-4);
+    const recent = en;
     liveCount = recent.length;
     const ctx = recent.join(' | ');
-    const truncated = ctx.length > 1000 ? ctx.slice(-1000) : ctx;
-    liveCtx = `Context last ${liveCount} utterances (budget 1000 chars):\n${truncated || '(empty — speak to fill context)'}`;
+    const truncated = ctx.length > 6000 ? ctx.slice(-6000) : ctx;
+    liveCtx = `Conversation history (all ${liveCount} utterances, budget 6000 chars):\n${truncated || '(empty — speak to fill context)'}`;
   }
   return {
     liveCtx,
@@ -1185,10 +1185,10 @@ Task: Use BOTH compressed history, recent conversation${contextHint ? ' and user
 
 Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
   }
-  const ctx = truncateForPrompt(contextEn.slice(-4), 1000);
+  const ctx = truncateForPrompt(contextEn, 6000);
   return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
 
-${contextHint}Context (last utterances): """${ctx}"""
+${contextHint}Conversation history (all utterances, budget 6000 chars): """${ctx}"""
 
 Question: """${question}"""
 
@@ -1507,7 +1507,7 @@ async function triggerSuggestForIndex(idx, question) {
     try {
       const contextSlice = compressEnabled
         ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
-        : finalizedEnPhrases.slice(Math.max(0, idx-3), idx+1);
+        : finalizedEnPhrases.slice(0, idx + 1);
       const prompt = buildSuggestPrompt(question, contextSlice);
       const raw = await callProviderForSuggest(prompt);
       const parsed = parseSuggestAnswers(raw);

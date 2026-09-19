@@ -5,12 +5,20 @@ describe('buildSuggestPrompt', () => {
   const question = 'What did you do yesterday?';
   const ctx4 = ['Hello', 'We had daily meeting', 'John reported API done', 'Any blockers?'];
 
-  it('default mode uses 4 recent utterances', () => {
+  it('default mode uses ALL history (compress OFF, 6000c)', () => {
     const p = buildSuggestPrompt(question, ctx4);
-    expect(p).toContain('Context (last utterances)');
+    expect(p).toContain('Conversation history (all utterances');
     expect(p).toContain('Question: """What did you do yesterday?"""');
     expect(p).toContain('Hello | We had daily meeting');
     expect(p).not.toContain('Compressed history');
+  });
+
+  it('default mode sends ALL when history long (truncates 6000c)', () => {
+    const many = Array.from({ length: 20 }, (_, i) => `utterance ${i} with some text to fill`);
+    const p = buildSuggestPrompt(question, many);
+    expect(p).toContain('Conversation history (all utterances');
+    expect(p).toContain('utterance 19');
+    expect(p).toContain('utterance 0'); // all retained unless >6000c
   });
 
   it('injects user context when provided', () => {

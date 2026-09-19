@@ -10,7 +10,7 @@ describe('contextInspector', () => {
       lastCompressedIdx: 0,
     });
     expect(snap.stats.mode).toBe('live');
-    expect(snap.liveCtx).toContain('Context last 3');
+    expect(snap.liveCtx).toContain('Conversation history (all 3');
     expect(snap.pendingList).toHaveLength(3);
     expect(formatInspectorMeta(snap)).toContain('📝');
   });
@@ -52,6 +52,6 @@ describe('contextInspector', () => {
       compressEnabled: false,
       lastCompressedIdx: 0,
     });
-    expect(snap.liveCtx.length).toBeLessThan(1200);
+    expect(snap.liveCtx.length).toBeLessThan(6500);
   });
 });

@@ -45,10 +45,10 @@ export function getContextSnapshot(s) {
     const compPreview = comp.length > CONFIG.COMPRESS_MAX_CHARS ? comp.slice(-CONFIG.COMPRESS_MAX_CHARS) : comp;
     liveCtx = `Compressed history (${compPreview.length} chars, ${compPreview.split('\n').filter(Boolean).length} bullets):\n${compPreview}\n\nRecent ${liveCount} utterances (1500 chars):\n${recentCtx}`;
   } else {
-    const recent = en.slice(-4);
+    const recent = en;
     liveCount = recent.length;
-    const ctx = truncateForInspect(recent, 1000);
-    liveCtx = `Context last ${liveCount} utterances (1000 chars):\n${ctx || '(empty)'}`;
+    const ctx = truncateForInspect(recent, 6000);
+    liveCtx = `Conversation history (all ${liveCount} utterances, budget 6000 chars):\n${ctx || '(empty — speak to fill context)'}`;
   }
   return {
     stats,
@@ -57,8 +57,8 @@ export function getContextSnapshot(s) {
     pendingSegment: pendingStr || '(nothing pending)',
     pendingList: pending,
     allQuestions,
-    recentForPrompt: enabled && comp ? en.slice(-CONFIG.COMPRESS_RECENT_KEEP) : en.slice(-4),
-    truncatedRecent: enabled && comp ? truncateForInspect(en.slice(-CONFIG.COMPRESS_RECENT_KEEP), 1500) : truncateForInspect(en.slice(-4), 1000),
+    recentForPrompt: enabled && comp ? en.slice(-CONFIG.COMPRESS_RECENT_KEEP) : en,
+    truncatedRecent: enabled && comp ? truncateForInspect(en.slice(-CONFIG.COMPRESS_RECENT_KEEP), 1500) : truncateForInspect(en, 6000),
   };
 }
 

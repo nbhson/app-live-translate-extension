@@ -212,7 +212,7 @@ flowchart TD
     D -- "Not configured" --> E["questionSuggestions[idx] = {state:'error'}"]
 
     D -- "OK" --> F["Parallel triggers<br/>(previously serial queue)"]
-    F --> G["contextSlice:<br/>compress ON → slice(-COMPRESS_RECENT_KEEP)<br/>compress OFF → slice(-4)"]
+    F --> G["contextSlice:<br/>compress ON → slice(-10, idx+1) = 10 recent<br/>compress OFF → slice(0, idx+1) = ALL history (budget 6000c)"]
 
     G --> H["buildSuggestPrompt(question, ctx)"]
     H --> I["callProviderForSuggest(prompt)<br/>fetchWithRetry + fetchWithTimeout 30s<br/>Gemini :generateContent or /chat/completions"]
@@ -249,7 +249,7 @@ flowchart TD
 
 **`triggerSuggestForIndex` in parallel**: removed serial `suggestQueue`, each `isQuestion` sets `loading` then calls `callProviderForSuggest` in parallel; `updateDock` auto-scrolls pills bar (`scrollLeft=scrollWidth` + `scrollIntoView` active). Dock is now resizable (drag handle, double-click expand 62%→78%) and `Suggestion Context` is collapsible (collapsed by default).
 
-**`buildSuggestPrompt()`** — injection protection: `sanitizePromptContext` replaces `"""` → `"'"` before embedding in prompt block; `truncateForPrompt` caps recent context (1500 chars compressed / 1000 chars normal).
+**`buildSuggestPrompt()`** — injection protection: `sanitizePromptContext` replaces `"""` → `"'"` before embedding in prompt block; `truncateForPrompt` caps context (compress ON: 1500 chars recent + 3000 chars summary / compress OFF: 6000 chars ALL history).
 
 **Provider** (`src/services/llm/provider.js`):
 - `fetchWithTimeout(url, opts, timeout)` — internal AbortController linked to external `signal`.
@@ -288,12 +288,13 @@ sequenceDiagram
         UI-->>U: toast "Compressed N sentences" / badge "Compressed X sentences"
     end
 
-    Note over UI: Prompt when compress ON:<br/>Compressed history (3000 chars) + Recent 10 utterances + Question
+    Note over UI: Prompt when compress ON:<br/>Compressed history (3000 chars) + Recent 10 utterances + Question<br/>Prompt when compress OFF:<br/>Conversation history ALL (6000 chars, no summary)
 ```
 
-When compression is on, `triggerSuggestForIndex` takes `contextSlice = finalizedEnPhrases.slice(max(0, idx-COMPRESS_RECENT_KEEP+1), idx+1)` (10 sentences) instead of 4.
+* **Compress OFF**: `contextSlice = finalizedEnPhrases.slice(0, idx+1)` → `buildSuggestPrompt` → `Conversation history (all utterances, budget 6000 chars)` — full history (truncated tail) so suggestions have full context.
+* **Compress ON**: `contextSlice = finalizedEnPhrases.slice(max(0, idx-10+1), idx+1)` (10 sentences) + `compressedSummary` 3000c → prompt `Compressed history + Recent 10`.
 
-**Context Inspector** (`src/ui/components/contextInspector.js` / `sidepanel.js:377`): `Pending` tab now shows **all questions** (`allQuestions = en.filter(isQuestion)`, not just `pendingSegment`), with `[#idx]` + header `All questions (N) — pending …`. `Live` tab = prompt that will be sent for next Q (compressed history + recent), `History` = `compressedSummary`.
+**Context Inspector** (`src/ui/components/contextInspector.js` / `sidepanel.js:377`): `Pending` tab now shows **all questions** (`allQuestions = en.filter(isQuestion)`, not just `pendingSegment`), with `[#idx]` + header `All questions (N) — pending …`. `Live` tab = prompt that will be sent for next Q (compressed history + recent when ON / ALL history 6000c when OFF), `History` = `compressedSummary`.
 
 ---
 
