@@ -59,4 +59,65 @@ describe('splitIntoUtterances', () => {
     // Should not throw
     expect(() => splitIntoUtterances('Hello! Are you there? Yes.')).not.toThrow();
   });
+
+  it('STT noise: strips leading single-char prefix + fused suffix', () => {
+    expect(splitIntoUtterances('s How are you')).toEqual(['How are you']);
+    expect(splitIntoUtterances('n How are you')).toEqual(['How are you']);
+    expect(splitIntoUtterances('s How are youestion')).toEqual(['How are you']);
+    expect(splitIntoUtterances('How are youestion')).toEqual(['How are you']);
+  });
+
+  it('fast-speech comma-concat: splits question + declarative', () => {
+    expect(splitIntoUtterances('How are you, Today I will go to the market')).toEqual([
+      'How are you',
+      'Today I will go to the market',
+    ]);
+    expect(splitIntoUtterances('s How are you, Today I will go to the market')).toEqual([
+      'How are you',
+      'Today I will go to the market',
+    ]);
+    expect(splitIntoUtterances('What is your name, My name is John')).toEqual([
+      'What is your name',
+      'My name is John',
+    ]);
+  });
+
+  it('fast-speech no-punctuation concat: splits WH question + declarative', () => {
+    expect(splitIntoUtterances('How are you Today I will go to school')).toEqual([
+      'How are you',
+      'Today I will go to school',
+    ]);
+  });
+
+  it('tag question without comma still intact (isQuestion responsibility)', () => {
+    expect(splitIntoUtterances('You are coming right')).toEqual(['You are coming right']);
+  });
+
+  it('multi Q+A concat from image: splits correctly', () => {
+    expect(splitIntoUtterances("where are you from I'm from the US where were you born I was born in Chicago where ?")).toEqual([
+      'where are you from',
+      "I'm from the US",
+      'where were you born',
+      'I was born in Chicago where?',
+    ]);
+    expect(splitIntoUtterances("I'm doing well what's your name my name is Esther how old are you I'm 33 years old ?")).toEqual([
+      "I'm doing well",
+      "what's your name",
+      'my name is Esther',
+      'how old are you',
+      "I'm 33 years old?",
+    ]);
+  });
+
+  it('filters noise single-char utterances', () => {
+    expect(splitIntoUtterances('S')).toEqual([]);
+    expect(splitIntoUtterances('e okay here we go')).toEqual(['okay here we go']);
+    expect(splitIntoUtterances('S S')).toEqual([]);
+    expect(splitIntoUtterances('with one sentence')).toEqual(['with one sentence']);
+  });
+
+  it('fixes h-prefix duplication (with -> h one sentence)', () => {
+    expect(splitIntoUtterances('h one sentence okay ?')).toEqual(['one sentence okay?']);
+    expect(splitIntoUtterances('with one sentence okay ?')).toEqual(['with one sentence okay?']);
+  });
 });

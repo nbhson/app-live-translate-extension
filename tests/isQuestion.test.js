@@ -95,4 +95,26 @@ describe('isQuestion', () => {
     expect(isQuestion('We need to discuss the budget')).toBe(false);
     expect(isQuestion("Let's start the daily meeting")).toBe(false);
   });
+
+  it('STT noise: leading single-char prefix + fused suffix', () => {
+    expect(isQuestion('s How are you')).toBe(true);
+    expect(isQuestion('n How are you')).toBe(true);
+    expect(isQuestion('s How are youestion')).toBe(true);
+    expect(isQuestion('How are youestion')).toBe(true);
+    expect(isQuestion('s What is your name')).toBe(true);
+  });
+
+  it('tag question without comma + fast-speech concat', () => {
+    expect(isQuestion('You are coming right')).toBe(true);
+    expect(isQuestion('You are right right')).toBe(true); // tag "right" without comma
+    expect(isQuestion('We should go yeah')).toBe(true);
+    expect(isQuestion('How are you, Today I will go to the market')).toBe(true);
+    expect(isQuestion('How are you Today I will explain')).toBe(true);
+    expect(isQuestion('s How are you, Today I will go')).toBe(true);
+  });
+
+  it('comma-concat should still be question even with declarative suffix', () => {
+    expect(isQuestion('What is your name, My name is John')).toBe(true);
+    expect(isQuestion('Where are you from, I am from Vietnam')).toBe(true);
+  });
 });

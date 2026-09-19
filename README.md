@@ -210,18 +210,24 @@ flowchart TD
     E --> N
 ```
 
-**`isQuestion()` — các lớp phát hiện** (`sidepanel.js:717`, `src/utils/isQuestion.js`):
+**`isQuestion()` — các lớp phát hiện** (`sidepanel.js:704-717`, `src/utils/isQuestion.js:1-8`):
 
+0. **Normalize STT**: strip `s/n` prefix trước WH (`s How are you` → `How are you`), fix dính từ `youestion → you`.
 1. Nhanh: có `?` → true.
 2. `window.nlp` (compromise) nếu có → `doc.questions()`.
 3. Loại trừ cảm thán: `What a ...!`, `How great ...!`.
-4. **Declarative trap** `RE_DECLARATIVE_FALSE`: `This is correct.` không phải câu hỏi (trừ khi có tag/trailing `or`/embedded).
-5. `RE_WH_START`: `who/what/when/where/why/how/which/...` + contraction `what's|how's|...` (≥2 từ, không kết thúc `!`).
-6. `RE_AUX_START`: đảo trợ động từ `is|are|do|does|did|can|could|will|would|have|...`.
-7. `RE_TAG_Q`: `, right?`, `, isn't it?`, `, yeah?`, `, huh?`.
-8. `RE_EMBEDDED`: `do you|can you|would you mind|could you tell|...` (≥4 từ).
-9. `RE_INDIRECT`: `do you know|tell me|any chance|let me know|...` (≥3 từ).
-10. `RE_TRAILING_OR`: `or not|or what|or something|anything|somewhere` (≥4 từ).
+4. **Comma-concat**: `How are you, Today I will...` → check left clause trước `,` nếu là WH/AUX thì true.
+5. **Declarative trap** `RE_DECLARATIVE_FALSE`: `This is correct.` không phải câu hỏi (trừ khi có tag/trailing `or`/embedded); tag không phẩy `right/ok/yeah` có guard tránh `are right` adjective.
+6. `RE_WH_START`: `who/what/when/where/why/how/which/...` + contraction `what's|how's|...` (≥2 từ, không kết thúc `!`).
+7. `RE_AUX_START`: đảo trợ động từ `is|are|do|does|did|can|could|will|would|have|...`.
+8. `RE_TAG_Q` (có phẩy): `, right?`, `, isn't it?`, `, okay?` + `RE_TAG_Q_NOCOMMA` (không phẩy): `right|ok|yeah|yep|huh` (≥3 từ, guard `are right`).
+9. `RE_EMBEDDED`: `do you|can you|would you mind|could you tell|how are you|...` (≥4 từ).
+10. `RE_INDIRECT`: `do you know|tell me|any chance|let me know|...` (≥3 từ).
+11. `RE_TRAILING_OR`: `or not|or what|or something|anything|somewhere` (≥4 từ).
+
+**`splitIntoUtterances()`** (`sidepanel.js:1232`, `src/utils/splitIntoUtterances.js:1-43`): `SENT_END_RE` + merge `ABBREVS` → iterative queue → `STRONG_SPLIT how/what/...` (prefix≥3) → `hows/whats` → `findQuestionDeclarativeSplit` Q→A (`what's your name`→`my name is Esther`) → comma-split → `isNoiseUtterance` lọc `S`/`h one...`→`one...`, normalize `e okay`/`youestion`.
+
+**`triggerSuggestForIndex` song song**: bỏ `suggestQueue` serial, mỗi `isQuestion` set `loading` rồi `callProviderForSuggest` song song; `updateDock` auto-scroll pills bar (`scrollLeft=scrollWidth` + `scrollIntoView` active).
 
 **`buildSuggestPrompt()`** — chống injection: `sanitizePromptContext` thay `"""` → `"'"` trước khi nhúng vào block prompt; `truncateForPrompt` giới hạn recent ctx (1500 chars nén / 1000 chars thường).
 
@@ -442,8 +448,8 @@ node --check sidepanel.js   # syntax check runtime script
 ```
 tests/
   buildSuggestPrompt.test.js      — 4 ctx vs compress 10 ctx + 3000 truncation, sanitize triple-quotes, context injection
-  isQuestion.test.js              — 11 cases (?, WH-start, aux, tag, embedded, indirect, exclamation exclusions, declarative trap)
-  splitIntoUtterances.test.js     — 8 cases (empty, punctuation, WH keep, mid-split how, abbrev merge Mr./Dr., Safari fallback)
+  isQuestion.test.js              — 14 cases (?, WH-start, aux, tag, embedded, indirect, exclamation, declarative trap, STT noise s/n+youestion, no-comma tag, comma-concat)
+  splitIntoUtterances.test.js     — 12 cases (empty, punctuation, WH keep, mid-split how, abbrev merge Mr./Dr., Safari fallback, STT normalize, comma-concat, no-punct concat)
   parseSuggestAnswers.test.js     — object/array/bullet fallback, limit 5, synthesizeStructures, code fence
   sanitizePromptContext.test.js   — trim/slice, null-safe, triple-quote escape (khớp cài đặt mới)
   isCapturableTab.test.js         — schemes, chrome://, about:, blocked hosts
@@ -469,10 +475,17 @@ tests/
 
 ## Changelog
 
+- **2026-09-19b**: Fix ảnh 2: `h one sentence okay ?` + song song gợi ý:
+  - `splitIntoUtterances`: thêm strip `h one...`→`one...` (single-consonant noise), iterative Q→A đệ quy fix `I'm doing well|what's your name|my name is Esther|how old are you|I'm 33...`.
+  - `triggerSuggestForIndex`: bỏ queue tuần tự → song song, display hết loading ngay; `updateDock` auto-scroll phải.
+  - `isNoiseUtterance`: `S S`/`S` lọc.
+- **2026-09-19**: Fix display concat & suggestion từ ảnh #1:
+  - `isQuestion`: giữ nguyên 2026-09-18.
+  - `splitIntoUtterances`: iterative queue, `findQuestionDeclarativeSplit` (Q→A `i'm/my name...`), normalize `e`+`okay` và `youestion`, `isNoiseUtterance` lọc `S`/`S S`, strip `,`, đệ quy split nhiều Q+A (`where are you from|I'm from the US|where were you born|I was born...`).
 - **2026-09-18**: Đại cải thiện toàn diện (trừ Summary per spec):
   - Dịch: chunking 4200, retry backoff + `Retry-After`, LRU cache chuẩn (`cache.js`), worker pool abort-aware (`batch.js`).
-  - `isQuestion`: contractions, tag words, embedded/indirect, `RE_DECLARATIVE_FALSE` trap.
-  - `splitIntoUtterances`: `who/which`, abbrev merge, `\b` boundary, earliest split, STT contraction fallback.
+  - `isQuestion`: normalize `s/n`+`youestion`, comma-concat left-clause, `RE_TAG_Q_NOCOMMA` guard `are right`, embedded `how are you`, contractions, tag words, `RE_DECLARATIVE_FALSE` trap.
+  - `splitIntoUtterances`: normalize, `who/which`, abbrev merge, `\b` boundary, earliest split, STT contraction fallback, comma-concat + no-punct `How are you Today...`.
   - `parseSuggestAnswers`: code fence, trailing comma, min length.
   - `sanitizePromptContext`: fix `"""` injection → `"'"`, control chars.
   - Provider: `fetchWithTimeout` + `fetchWithRetry` (429/5xx/Retry-After), empty-response throw, validation.

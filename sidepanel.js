@@ -700,14 +700,26 @@ function handleRecognitionEnd() {
   } else updateUIForListening(false);
 }
   
-// Hoisted regexes — compiled once, pure (improved 2026-09-18)
+// Hoisted regexes — compiled once, pure (improved 2026-09-19)
 const RE_WH_START = /^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's)\b/i;
 const RE_AUX_START = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't|is there|are there|was there|were there|have there|has there|what's|how's|where's|who's)\b/i;
 const RE_TAG_Q = /,\s*(right|correct|isn't it|aren't you|don't you|doesn't it|doesn't he|doesn't she|didn't you|won't you|wouldn't you|haven't you|hasn't he|is it|are you|wasn't it|weren't you|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
-const RE_EMBEDDED = /\b(do you|does he|does she|do they|did you|did he|did she|are you|is he|is she|are they|is there|are there|was there|were there|can you|could you|would you|will you|shall we|should you|should we|have you|has he|has she|had you|am i|would you mind|could you please|can you please|will you please|do you know|do you think|have you ever|would you like|could you tell|can you tell|are you going|is he going|will you be|have you been|has anyone|did anyone|did you ever|could you kindly|would you kindly)\b/i;
+const RE_TAG_Q_NOCOMMA = /\b(right|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
+const RE_EMBEDDED = /\b(do you|does he|does she|do they|did you|did he|did she|are you|is he|is she|are they|is there|are there|was there|were there|can you|could you|would you|will you|shall we|should you|should we|have you|has he|has she|had you|am i|would you mind|could you please|can you please|will you please|do you know|do you think|have you ever|would you like|could you tell|can you tell|are you going|is he going|will you be|have you been|has anyone|did anyone|did you ever|could you kindly|would you kindly|how are you|how is it|what do you|where are you|when are you|why are you|who are you)\b/i;
 const RE_INDIRECT = /^(do you know|can you tell|would you mind|could you explain|have you ever|are you familiar|do you think|would you say|is there any|are there any|tell me|let me know|any idea|anyone know|anybody know|everyone know|any chance|could you share|would you happen)\b/i;
 const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
 const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
+
+function normalizeForQuestion(raw){
+  let s=String(raw||'').trim();
+  s=s.replace(/^[a-z]\s+(?=(?:who|what|when|where|why|how|which|whom|whose|whether)\b)/i,'');
+  s=s.replace(/\b(you)estion\b/gi,'$1');
+  s=s.replace(/\b(how)estion\b/gi,'$1');
+  s=s.replace(/\b(what)estion\b/gi,'$1');
+  s=s.replace(/\s+/g,' ').trim();
+  return s;
+}
+const RE_Q_START_SIDE = /^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's|is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\b/i;
 
 /**
  * Detect question — multi-layer + optional compromise, pure-ish, hoisted regex, validated.
@@ -715,11 +727,13 @@ const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(
  * @returns {boolean}
  */
 function isQuestion(text) {
-  const raw = (text || '').trim();
-  if (!raw) return false;
-  if (raw.length < 3) return false;
-  // Fast path: any '?' anywhere (speech often omits but when present it's strong)
+  const rawIn = (text || '').trim();
+  if (!rawIn) return false;
+  if (rawIn.length < 3) return false;
+  if (rawIn.includes('?')) return true;
+  const raw = normalizeForQuestion(rawIn);
   if (raw.includes('?')) return true;
+  if (!raw || raw.length < 3) return false;
 
   const t = raw.replace(/\s+/g, ' ').trim();
   const lower = t.toLowerCase();
@@ -749,7 +763,31 @@ function isQuestion(text) {
     if (/^how\s+(wonderful|nice|great|beautiful|amazing|lovely|good|bad|terrible).*!\s*$/i.test(t)) return false;
     if (/^what\s+a\b/.test(t)) return false;
   }
-  const startsDeclarative = RE_DECLARATIVE_FALSE.test(t) && !RE_TAG_Q.test(t) && !RE_TRAILING_OR.test(t) && !RE_EMBEDDED.test(t);
+  // Fast-speech comma-concat: "How are you, Today I will..."
+  const commaIdx = t.indexOf(',');
+  if (commaIdx > 0) {
+    const left = t.slice(0, commaIdx).trim();
+    const leftWords = left.split(/\s+/).filter(Boolean).length;
+    if (leftWords >= 2 && leftWords <= 12) {
+      const leftLower = left.toLowerCase();
+      if (RE_WH_START.test(left) || RE_AUX_START.test(left) || RE_EMBEDDED.test(leftLower) || RE_TAG_Q.test(left)) {
+        const right = t.slice(commaIdx + 1).trim();
+        if (right && /^[A-Z]/.test(right)) return true;
+        if (RE_WH_START.test(left) || RE_AUX_START.test(left)) return true;
+      }
+    }
+  }
+  function isNoCommaTag(s, wordCount){
+    if(!RE_TAG_Q_NOCOMMA.test(s)||wordCount<3) return false;
+    if(/\b(are|is|was|were)\s+right\s*\??\s*$/i.test(s) && !/,\s*right\s*\??\s*$/i.test(s)){
+      if(/^(i think|you are|he is|she is|it is|we are|they are)\b/i.test(s.trim()) || /\bthink\s+you\s+are\s+right\s*$/i.test(s)) return false;
+      if(/^\w+\s+(is|are|was|were)\s+right\s*$/i.test(s.trim())) return false;
+    }
+    if(/^this\s+is\s+correct\s*$/i.test(s)||/^that\s+is\s+correct\s*$/i.test(s)) return false;
+    return true;
+  }
+  const hasTag = RE_TAG_Q.test(t) || isNoCommaTag(t, wc);
+  const startsDeclarative = RE_DECLARATIVE_FALSE.test(t) && !hasTag && !RE_TRAILING_OR.test(t) && !RE_EMBEDDED.test(t);
   if (startsDeclarative && !RE_WH_START.test(t) && !RE_AUX_START.test(t)) return false;
 
   if (RE_WH_START.test(t)) {
@@ -757,6 +795,7 @@ function isQuestion(text) {
   }
   if (RE_AUX_START.test(t) && wc >= 2) return true;
   if (RE_TAG_Q.test(t)) return true;
+  if (isNoCommaTag(t, wc)) return true;
   if (RE_EMBEDDED.test(t) && wc >= 4) return true;
   if (RE_INDIRECT.test(lower) && wc >= 3) return true;
   if (RE_TRAILING_OR.test(t) && wc >= 4) return true;
@@ -1043,12 +1082,14 @@ async function triggerSuggestForIndex(idx, question) {
     updateDock();
     return;
   }
-  // queue: serialize LLM calls to avoid burst (max 1 concurrent)
-  const task = async () => {
-    questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
-    selectedQuestionIdx = idx;
-    updateSuggestCard(idx);
-    updateDock();
+  // parallel: display loading immediately, then fetch concurrently (no serial queue)
+  questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
+  // auto-select latest question for pills bar
+  selectedQuestionIdx = idx;
+  updateSuggestCard(idx);
+  updateDock();
+  // fire async without awaiting queue
+  (async () => {
     try {
       const contextSlice = compressEnabled
         ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
@@ -1069,10 +1110,8 @@ async function triggerSuggestForIndex(idx, question) {
     updateSuggestCard(idx);
     updateDock();
     autoScroll(true);
-  };
-  // chain onto queue
-  suggestQueue = suggestQueue.then(task).catch(task);
-  return suggestQueue;
+  })();
+  return;
 }
 
 // === Suggestion Dock logic (separated UI like mockup) ===
@@ -1129,6 +1168,16 @@ function updateDock() {
     selectedQuestionIdx = entries.length ? Number(entries[0][0]) : null;
   }
   renderDockBody();
+  // auto-scroll pills bar to the rightmost active question
+  if (questionPills) {
+    requestAnimationFrame(() => {
+      try {
+        questionPills.scrollLeft = questionPills.scrollWidth;
+        const active = questionPills.querySelector('.q-pill.active');
+        if (active && active.scrollIntoView) active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'end' });
+      } catch {}
+    });
+  }
 }
 
 function renderDockBody() {
@@ -1194,6 +1243,49 @@ const SENT_END_RE = (() => { try { new RegExp('(?<=[.!?])'); return /(?<=[.!?])\
 const STRONG_SPLIT_WORDS = Object.freeze(['how','what','why','where','when','who','which']);
 const MIN_PREFIX_WORDS = 3;
 const ABBREVS_SET = new Set(['mr','mrs','ms','dr','prof','sr','jr','st','vs','etc','inc','ltd','co']);
+function normalizeForSplit(text){
+  let s=String(text||'').trim();
+  s=s.replace(/^[a-z]\s+(?=(?:who|what|when|where|why|how|which|whom|whose|whether|okay|ok|yeah|yep|right|how's|what's|where's)\b)/i,'');
+  if(/^[b-hj-zB-HJ-Z]\s+\w/.test(s) && s.split(/\s+/).length>=2){
+    const parts=s.split(/\s+/);
+    if(parts[0].length===1 && parts[1].length>=2) s=s.replace(/^[a-z]\s+/i,'');
+  }
+  s=s.replace(/\b(you)estion\b/gi,'$1');
+  s=s.replace(/\b(how)estion\b/gi,'$1');
+  s=s.replace(/\b(what)estion\b/gi,'$1');
+  s=s.replace(/\s+([?!.])/g,'$1');
+  return s;
+}
+const RE_DECLARATIVE_START_SIDE = /^(i'm|i am|i was|my name|i was born|today|now|then|here|my|our|your|i've|we're|they're|i)\b/i;
+function isNoiseUtteranceSide(s){
+  const t=s.trim();
+  if(!t) return true;
+  if(t.length<=1) return true;
+  if(/^[a-z]$/i.test(t)) return true;
+  if(/^[a-z]\s*$/i.test(t)) return true;
+  const parts=t.split(/\s+/);
+  if(parts.length===1 && t.length<=2) return true;
+  if(parts.length>=1 && parts.every((w)=>w.length===1)) return true;
+  if(parts.length<=3 && parts.join('').length<=3 && !/[aeiou]/i.test(t)) return true;
+  return false;
+}
+function findQuestionDeclarativeSplitSide(seg){
+  const words=seg.split(/\s+/);
+  if(words.length<4) return -1;
+  const segWords=seg.split(/\s+/);
+  const charPos=[0]; let p=0;
+  for(let wi=0;wi<segWords.length;wi++){ p+=segWords[wi].length+1; charPos.push(p); }
+  for(let i=3;i<=words.length-2;i++){
+    const left=words.slice(0,i).join(' ');
+    const right=words.slice(i).join(' ');
+    if(left.split(/\s+/).length<3 || right.split(/\s+/).length<2) continue;
+    const leftIsQ=RE_Q_START_SIDE.test(left);
+    if(!leftIsQ) continue;
+    if(!RE_DECLARATIVE_START_SIDE.test(right)) continue;
+    return charPos[i];
+  }
+  return -1;
+}
 
 /**
  * Pure: split block into utterances — no side effects, validated, Safari fallback, abbrev-aware.
@@ -1201,7 +1293,7 @@ const ABBREVS_SET = new Set(['mr','mrs','ms','dr','prof','sr','jr','st','vs','et
  * @returns {string[]}
  */
 function splitIntoUtterances(text) {
-  const trimmed = String(text||'').trim();
+  const trimmed = normalizeForSplit(String(text||'').trim());
   if (!trimmed) return [];
   const segs = trimmed.split(SENT_END_RE).map(s => s.trim()).filter(Boolean);
   const merged = [];
@@ -1216,29 +1308,52 @@ function splitIntoUtterances(text) {
   }
   const out = [];
   for (const seg of merged) {
-    let splitPos=-1;
-    for (const word of STRONG_SPLIT_WORDS) {
-      const re=new RegExp(`\\b${word}\\b`,'i');
-      const m=re.exec(seg);
-      if (m && m.index>0) {
-        const prefix=seg.slice(0,m.index).trim();
-        const cnt=prefix?prefix.split(/\s+/).length:0;
-        if (cnt>=MIN_PREFIX_WORDS && (splitPos===-1 || m.index<splitPos)) splitPos=m.index;
+    const queue=[seg];
+    const segOut=[];
+    while(queue.length){
+      const cur=queue.shift();
+      const qdIdx=findQuestionDeclarativeSplitSide(cur);
+      if(qdIdx>0){
+        let left=cur.slice(0,qdIdx).trim().replace(/,\s*$/,'');
+        const right=cur.slice(qdIdx).trim().replace(/^,\s*/,'');
+        if(left && right && right.split(/\s+/).length>=2 && left.split(/\s+/).length>=2){ queue.unshift(right); segOut.push(left); continue; }
       }
-    }
-    if (splitPos===-1) {
-      const lower=seg.toLowerCase();
-      for (const w of ['hows','whats','wheres','whos']) {
-        const idx=lower.indexOf(w+' ');
-        if (idx>0 && seg.slice(0,idx).trim().split(/\s+/).length>=MIN_PREFIX_WORDS) { splitPos=idx; break; }
+      const lower=cur.toLowerCase();
+      let splitPos=-1;
+      for(const word of STRONG_SPLIT_WORDS){
+        const re=new RegExp(`\\b${word}\\b`,'i');
+        const m=re.exec(cur);
+        if(m && m.index>0){
+          const prefix=cur.slice(0,m.index).trim();
+          const cnt=prefix?prefix.split(/\s+/).length:0;
+          if(cnt>=MIN_PREFIX_WORDS && (splitPos===-1 || m.index<splitPos)) splitPos=m.index;
+        }
       }
+      if(splitPos===-1){
+        for(const w of ['hows','whats','wheres','whos']){
+          const idx=lower.indexOf(w+' ');
+          if(idx>0 && cur.slice(0,idx).trim().split(/\s+/).length>=MIN_PREFIX_WORDS){ splitPos=idx; break; }
+        }
+      }
+      if(splitPos===-1 && cur.includes(',')){
+        const cIdx=cur.indexOf(',');
+        const left=cur.slice(0,cIdx).trim();
+        const right=cur.slice(cIdx+1).trim();
+        const lw=left?left.split(/\s+/).length:0;
+        const rw=right?right.split(/\s+/).length:0;
+        if(lw>=2 && lw<=12 && rw>=2){
+          const leftIsQ=RE_Q_START_SIDE.test(left) || /\b(how are you|what do you|where are you)\b/i.test(left);
+          if(leftIsQ && /^[A-Z]/i.test(right)){ queue.unshift(right); segOut.push(left); continue; }
+        }
+      }
+      if(splitPos>0){
+        const left=cur.slice(0,splitPos).trim();
+        const right=cur.slice(splitPos).trim();
+        if(left && right && right.split(/\s+/).length>=2){ queue.unshift(right); segOut.push(left); }
+        else segOut.push(cur);
+      } else segOut.push(cur);
     }
-    if (splitPos>0) {
-      const left=seg.slice(0,splitPos).trim();
-      const right=seg.slice(splitPos).trim();
-      if (left && right && right.split(/\s+/).length>=2) { out.push(left); out.push(right); }
-      else out.push(seg);
-    } else out.push(seg);
+    for(const s of segOut){ if(!isNoiseUtteranceSide(s)) out.push(s); }
   }
   return out.filter(Boolean);
 }
