@@ -1,10 +1,14 @@
 // Hoisted regexes — compiled once, pure
 const RE_WH_START = /^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's)\b/i;
+const RE_WH_ABOUT = /^(what about|how about)\b/i;
+const RE_CASUAL_Q = /^(wanna|lemme|gimme|dunno)\b/i;
 const RE_AUX_START = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't|is there|are there|was there|were there|have there|has there|what's|how's|where's|who's)\b/i;
 const RE_TAG_Q = /,\s*(right|correct|isn't it|aren't you|don't you|doesn't it|doesn't he|doesn't she|didn't you|won't you|wouldn't you|haven't you|hasn't he|is it|are you|wasn't it|weren't you|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
 const RE_TAG_Q_NOCOMMA = /\b(right|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
 const RE_EMBEDDED = /\b(do you|does he|does she|do they|did you|did he|did she|are you|is he|is she|are they|is there|are there|was there|were there|can you|could you|would you|will you|shall we|should you|should we|have you|has he|has she|had you|am i|would you mind|could you please|can you please|will you please|do you know|do you think|have you ever|would you like|could you tell|can you tell|are you going|is he going|will you be|have you been|has anyone|did anyone|did you ever|could you kindly|would you kindly|how are you|how is it|what do you|where are you|when are you|why are you|who are you)\b/i;
-const RE_INDIRECT = /^(do you know|can you tell|would you mind|could you explain|have you ever|are you familiar|do you think|would you say|is there any|are there any|tell me|let me know|any idea|anyone know|anybody know|everyone know|any chance|could you share|would you happen)\b/i;
+const RE_INDIRECT = /^(do you know|can you tell|would you mind|could you explain|have you ever|are you familiar|do you think|would you say|is there any|are there any|tell me|let me know|any idea|anyone know|anybody know|everyone know|any chance|could you share|would you happen|i was wondering if|wondering if|any chance you could|is there a chance)\b/i;
+const RE_WONDERING = /\b(i was wondering if|i wonder if|wondering if|do you mind if|would you mind if)\b/i;
+const RE_POLITE = /\b(could you maybe|would you maybe|could you kindly|would you kindly|would you please|could you please|would you be able to|could you be able to|could you just|would you just)\b/i;
 const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
 const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
 
@@ -23,6 +27,12 @@ function normalizeForQuestion(raw) {
   s = s.replace(/\b(you)estion\b/gi, '$1');
   s = s.replace(/\b(how)estion\b/gi, '$1');
   s = s.replace(/\b(what)estion\b/gi, '$1');
+  // expand casual speech: wanna -> want to, gonna -> going to, lemme -> let me
+  s = s.replace(/\bwanna\b/gi, 'want to');
+  s = s.replace(/\bgonna\b/gi, 'going to');
+  s = s.replace(/\bgotta\b/gi, 'got to');
+  s = s.replace(/\blemme\b/gi, 'let me');
+  s = s.replace(/\bgimme\b/gi, 'give me');
   // collapse whitespace
   s = s.replace(/\s+/g, ' ').trim();
   return s;
@@ -39,6 +49,8 @@ export function isQuestion(text, opts = {}) {
   if (!rawIn) return false;
   if (rawIn.length < 3) return false;
   if (rawIn.includes('?')) return true;
+  // casual wanna/lemme before STT expansion (wanna -> want to)
+  if (RE_CASUAL_Q.test(rawIn.trim())) return true;
 
   const raw = normalizeForQuestion(rawIn);
   if (raw.includes('?')) return true;
@@ -114,6 +126,8 @@ export function isQuestion(text, opts = {}) {
   const startsDeclarative = RE_DECLARATIVE_FALSE.test(t) && !hasTag && !RE_TRAILING_OR.test(t) && !RE_EMBEDDED.test(t);
   if (startsDeclarative && !RE_WH_START.test(t) && !RE_AUX_START.test(t)) return false;
 
+  if (RE_WH_ABOUT.test(t) && wc >= 2 && !t.endsWith('!')) return true;
+  if (RE_CASUAL_Q.test(t) && wc >= 2) return true;
   if (RE_WH_START.test(t)) {
     // contractions like "what's" count as WH
     if (wc >= 2 && !t.endsWith('!')) return true;
@@ -123,6 +137,8 @@ export function isQuestion(text, opts = {}) {
   // tag without comma: only for short markers (right/okay/yeah...) and not declarative adjectives like "correct"
   if (isNoCommaTag(t, wc)) return true;
   if (RE_EMBEDDED.test(t) && wc >= 4) return true;
+  if (RE_WONDERING.test(t) && wc >= 4) return true;
+  if (RE_POLITE.test(t) && wc >= 4) return true;
   if (RE_INDIRECT.test(lower) && wc >= 3) return true;
   if (RE_TRAILING_OR.test(t) && wc >= 4) return true;
   return false;

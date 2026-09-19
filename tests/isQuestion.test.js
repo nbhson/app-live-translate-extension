@@ -56,7 +56,7 @@ describe('isQuestion', () => {
     expect(isQuestion('Could you explain this code')).toBe(true);
     expect(isQuestion('Would you mind opening the window')).toBe(true);
     expect(isQuestion('Have you ever been to Japan')).toBe(true);
-    expect(isQuestion('I think you are right')).toBe(false); // declarative with you are but wc<4? actually wc=5 but no embedded phrase? it has "you are" but needs "are you"/"do you" etc - should be false because our RE requires "are you" etc
+    expect(isQuestion('I think you are right')).toBe(false);
     expect(isQuestion('You are coming tomorrow')).toBe(false);
   });
 
@@ -79,11 +79,10 @@ describe('isQuestion', () => {
     });
     expect(isQuestion('This is a question from nlp', { nlp: fakeNlp })).toBe(true);
     expect(isQuestion('This is declarative', { nlp: fakeNlp })).toBe(false);
-    // fallback still works when nlp returns no question but heuristic does
     expect(isQuestion('What is your name', { nlp: () => ({ questions: () => ({ found: false, length: 0 }) }) })).toBe(true);
   });
 
-  it('narrow: I think you are right should be false (embedded requires wc>=4 and specific phrase)', () => {
+  it('narrow: I think you are right should be false', () => {
     expect(isQuestion('I think you are right')).toBe(false);
   });
 
@@ -106,7 +105,7 @@ describe('isQuestion', () => {
 
   it('tag question without comma + fast-speech concat', () => {
     expect(isQuestion('You are coming right')).toBe(true);
-    expect(isQuestion('You are right right')).toBe(true); // tag "right" without comma
+    expect(isQuestion('You are right right')).toBe(true);
     expect(isQuestion('We should go yeah')).toBe(true);
     expect(isQuestion('How are you, Today I will go to the market')).toBe(true);
     expect(isQuestion('How are you Today I will explain')).toBe(true);
@@ -116,5 +115,37 @@ describe('isQuestion', () => {
   it('comma-concat should still be question even with declarative suffix', () => {
     expect(isQuestion('What is your name, My name is John')).toBe(true);
     expect(isQuestion('Where are you from, I am from Vietnam')).toBe(true);
+  });
+
+  it('NEW: what/how about + casual wanna/gonna', () => {
+    expect(isQuestion('What about tomorrow meeting')).toBe(true);
+    expect(isQuestion('How about we go tomorrow')).toBe(true);
+    expect(isQuestion('Wanna grab coffee')).toBe(true);
+    expect(isQuestion('Lemme know your thoughts')).toBe(true);
+    expect(isQuestion('Gimme a hand')).toBe(true);
+    expect(isQuestion('wanna you come')).toBe(true);
+    // gonna/gotta declarative should NOT be question without ?
+    expect(isQuestion('Gonna go to the meeting tomorrow')).toBe(false);
+    expect(isQuestion('Gotta leave now')).toBe(false);
+  });
+
+  it('NEW: wondering / polite requests', () => {
+    expect(isQuestion('I was wondering if you are available tomorrow')).toBe(true);
+    expect(isQuestion('Wondering if you could help me')).toBe(true);
+    expect(isQuestion('I wonder if you can send the report')).toBe(true);
+    expect(isQuestion('Could you maybe help me with this')).toBe(true);
+    expect(isQuestion('Could you kindly explain this')).toBe(true);
+    expect(isQuestion('Would you be able to join the call')).toBe(true);
+    expect(isQuestion('Would you please send the file')).toBe(true);
+    expect(isQuestion('Do you mind if I ask a question')).toBe(true);
+    // not question if declarative wondering without if
+    expect(isQuestion('I was wondering about the project')).toBe(false);
+  });
+
+  it('NEW: expanded indirect + declarative guard', () => {
+    expect(isQuestion('Any chance you could help')).toBe(true);
+    expect(isQuestion('Is there a chance we can meet tomorrow')).toBe(true);
+    expect(isQuestion('This is correct right')).toBe(true); // tag overrides declarative false
+    expect(isQuestion('This is correct')).toBe(false);
   });
 });

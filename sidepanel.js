@@ -136,6 +136,50 @@ function syncState() {
   State.suggestContextPrompt = suggestContextPrompt; State.contextPromptSaveTimer = contextPromptSaveTimer;
 }
 
+// --- Harness (Chrome Extension) — single composition root for sidepanel runtime ---
+// Mirrors src/harness/* (ESM). This object isolates chrome/window/fetch so core
+// logic is testable & future ESM sidepanel (dist/main.js) can share same contract.
+// Existing functions delegate to Harness; UI behavior unchanged.
+const Harness = (() => {
+  const _isCapturableTab = (tab) => {
+    if (!tab || typeof tab.id !== 'number' || typeof tab.url !== 'string') return false;
+    const s = String(tab.url).trim();
+    if (!s || s.startsWith('chrome://') || s.startsWith('chrome-extension://') || s.startsWith('about:') || s.startsWith('edge://')) return false;
+    try { const u = new URL(s); if (!['http:', 'https:'].includes(u.protocol)) return false; if (['chrome.google.com','chromewebstore.google.com','accounts.google.com'].some(b => u.hostname===b || u.hostname.endsWith('.'+b))) return false; return true; } catch { return false; }
+  };
+  return Object.freeze({
+    config: CONFIG,
+    state: State,
+    isCapturableTab: _isCapturableTab,
+    storage: { get: (...a) => storageGet(...a), set: (...a) => storageSet(...a) },
+    chrome: {
+      sendMessage: (msg) => sendMessageAsync(msg),
+      isCapturableTab: _isCapturableTab,
+      checkMicPermission: () => checkMicPermission(),
+      openPermissionTab: () => openPermissionTab(),
+    },
+    llm: {
+      fetchWithRetry: (...a) => fetchWithRetrySidepanel(...a),
+      callForSuggest: (p) => callProviderForSuggest(p),
+      callGeneric: (p, o) => callProviderGeneric(p, o),
+    },
+    translate: {
+      translateText: (t, o) => translateText(t, o),
+      translateBatch: (tasks, c) => translateBatchConcurrent(tasks, c),
+    },
+    audio: {
+      computeSpectralCentroid: (d, r) => computeSpectralCentroid(d, r),
+      shouldToggleSpeaker: (f, p) => shouldToggleSpeaker(f, p),
+      setupMonitor: (s) => setupSpeakerMonitor(s),
+      teardown: () => teardownSpeakerMonitor(),
+    },
+    speech: {
+      parseEvent: (e) => parseRecognitionEvent(e),
+    },
+  });
+})();
+if (typeof window !== 'undefined') { try { window.Harness = Harness; } catch {} }
+
 // Provider config state (custom: baseUrl + apiKey + model)
 let providerConfig = {
   baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
@@ -159,7 +203,9 @@ const DOM = Object.freeze({
   tabLive: $id('tabLive'), tabSummary: $id('tabSummary'), liveTabContent: $id('liveTabContent'), summaryTabContent: $id('summaryTabContent'),
   settingsBtn: $id('settingsBtn'), settingsOverlay: $id('settingsOverlay'), closeSettingsBtn: $id('closeSettingsBtn'), baseUrlInput: $id('baseUrlInput'), apiKeyInput: $id('apiKeyInput'), toggleApiKeyVisibilityBtn: $id('toggleApiKeyVisibilityBtn'), modelInput: $id('modelInput'), geminiModelSelect: $id('geminiModelSelect'), saveSettingsBtn: $id('saveSettingsBtn'),
   apiWarningCard: $id('apiWarningCard'), configNowBtn: $id('configNowBtn'), summaryLangSelect: $id('summaryLang'), summaryDetailSelect: $id('summaryDetail'), generateSummaryBtn: $id('generateSummaryBtn'), copySummaryBtn: $id('copySummaryBtn'), summaryPlaceholder: $id('summaryPlaceholder'), summaryMarkdown: $id('summaryMarkdown'), summaryLoading: $id('summaryLoading'), summaryContent: $id('summaryContent'),
-  contextPromptInput: $id('contextPromptInput'), contextPromptBadge: $id('contextPromptBadge'), clearContextPromptBtn: $id('clearContextPromptBtn'),
+  contextPromptInput: $id('contextPromptInput'), contextPromptBadge: $id('contextPromptBadge'), clearContextPromptBtn: $id('clearContextPromptBtn'), contextPromptWrap: $id('contextPromptWrap'), contextPromptToggle: $id('contextPromptToggle'), contextPromptCollapsible: $id('contextPromptCollapsible'),
+  inspectorToggle: $id('inspectorToggle'), inspectorMeta: $id('inspectorMeta'), inspectorBody: $id('inspectorBody'), inspectorChevron: $id('inspectorChevron'), paneLive: $id('paneLive'), paneCompressed: $id('paneCompressed'), panePending: $id('panePending'), copyContextBtn: $id('copyContextBtn'),
+  dockResizer: $id('dockResizer'), dockExpandBtn: $id('dockExpandBtn'),
 });
 // Legacy aliases for untouched summary code
 const toggleBtn = DOM.toggleBtn; const playIcon = DOM.playIcon; const stopIcon = DOM.stopIcon; const btnText = DOM.btnText; const clearBtn = DOM.clearBtn; const statusText = DOM.statusText; const logoDot = DOM.logoDot; const audioSourceSelect = DOM.audioSourceSelect;
@@ -216,7 +262,28 @@ function updateContextPromptBadge(showTemp) {
 }
 function setupContextPrompt() {
   const inp = DOM.contextPromptInput; const clearBtn = DOM.clearContextPromptBtn;
+  const wrap = DOM.contextPromptWrap || document.getElementById('contextPromptWrap');
+  const toggle = DOM.contextPromptToggle || document.getElementById('contextPromptToggle');
+  const collapsible = DOM.contextPromptCollapsible || document.getElementById('contextPromptCollapsible');
   if (!inp) return;
+  // collapsed by default to save dock space; auto-expand if has value
+  const hasVal = !!suggestContextPrompt.trim();
+  if (wrap && toggle && collapsible) {
+    const setCollapsed = (collapsed) => {
+      wrap.classList.toggle('collapsed', collapsed);
+      toggle.setAttribute('aria-expanded', String(!collapsed));
+      collapsible.hidden = collapsed;
+      collapsible.style.display = collapsed ? 'none' : 'flex';
+    };
+    setCollapsed(!hasVal);
+    toggle.addEventListener('click', () => {
+      const nowCollapsed = wrap.classList.contains('collapsed');
+      setCollapsed(!nowCollapsed);
+      if (!nowCollapsed === false) onIdle(()=> inp.focus());
+    });
+    // if user starts typing and wrap is collapsed, auto expand
+    inp.addEventListener('focus', () => { if (wrap.classList.contains('collapsed')) setCollapsed(false); });
+  }
   const debouncedSave = debounce(async (v) => { await saveContextPrompt(v); updateContextPromptBadge(true); }, 450);
   inp.addEventListener('input', () => {
     const v = inp.value; inp.classList.toggle('has-value', !!v.trim());
@@ -227,6 +294,50 @@ function setupContextPrompt() {
     debouncedSave.cancel(); inp.value = ''; inp.classList.remove('has-value');
     await saveContextPrompt(''); updateContextPromptBadge(false); inp.focus(); showToast('Context cleared', 'default');
   });
+}
+function setupDockResizer() {
+  const resizer = DOM.dockResizer || document.getElementById('dockResizer');
+  const dock = DOM.suggestionDock || document.getElementById('suggestionDock');
+  const expandBtn = DOM.dockExpandBtn || document.getElementById('dockExpandBtn');
+  if (!resizer || !dock) return;
+  let startY = 0, startH = 0, dragging = false;
+  const minH = 140, maxH = window.innerHeight * 0.78;
+  const onMove = (e) => {
+    if (!dragging) return;
+    const dy = startY - e.clientY;
+    let nh = startH + dy;
+    nh = Math.max(minH, Math.min(maxH, nh));
+    dock.style.maxHeight = nh + 'px';
+    dock.style.minHeight = nh + 'px';
+  };
+  const onUp = () => {
+    if (!dragging) return;
+    dragging = false; resizer.classList.remove('dragging');
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    try { localStorage.setItem('dockHeight', dock.style.maxHeight); } catch {}
+  };
+  resizer.addEventListener('mousedown', (e) => {
+    dragging = true; startY = e.clientY; startH = dock.getBoundingClientRect().height;
+    resizer.classList.add('dragging'); e.preventDefault();
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+  resizer.addEventListener('dblclick', () => {
+    const isExp = dock.classList.contains('expanded');
+    dock.classList.toggle('expanded', !isExp);
+    if (!isExp) { dock.style.maxHeight = ''; dock.style.minHeight = ''; }
+    else { dock.style.maxHeight = '62%'; dock.style.minHeight = '220px'; }
+    try { localStorage.setItem('dockExpanded', String(!isExp)); } catch {}
+  });
+  if (expandBtn) expandBtn.addEventListener('click', () => resizer.dispatchEvent(new MouseEvent('dblclick')));
+  // restore saved
+  try {
+    const savedH = localStorage.getItem('dockHeight');
+    const savedExp = localStorage.getItem('dockExpanded');
+    if (savedExp === 'true') dock.classList.add('expanded');
+    if (savedH && !dock.classList.contains('expanded')) { dock.style.maxHeight = savedH; dock.style.minHeight = savedH; }
+  } catch {}
 }
 
 /** Defer non-critical work to idle — keeps first paint <100ms */
@@ -249,9 +360,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Non-critical — defer to idle so first paint not blocked by 343KB compromise / settings
   onIdle(async () => {
     try {
-      setupSettingsOverlay(); setupSummaryFeatures(); setupSuggestToggle(); setupCompressToggle(); setupSuggestionDock(); setupContextPrompt();
+      setupSettingsOverlay(); setupSummaryFeatures(); setupSuggestToggle(); setupCompressToggle(); setupSuggestionDock(); setupContextPrompt(); setupContextInspector(); setupDockResizer();
       await Promise.all([loadCompressPref(), loadContextPrompt()]);
-      updateCompressToggleUI(); updateDock();
+      updateCompressToggleUI(); updateDock(); updateContextInspector();
       performance.mark('sidepanel-ready');
       try { performance.measure('sidepanel-full', 'sidepanel-html-start', 'sidepanel-ready'); const m = performance.getEntriesByName('sidepanel-full')[0]; if (m) console.log(`[perf] sidepanel full ${m.duration.toFixed(0)}ms`); } catch {}
     } catch (e) { console.warn('[init-idle]', e); }
@@ -325,6 +436,102 @@ function updateCompressToggleUI() {
   else { statusEl.classList.remove('has-content'); statusEl.textContent = '🗜️ 5m compression enabled — waiting for transcript…'; }
   const manualBtn = document.getElementById('manualCompressBtn');
   if (manualBtn) { manualBtn.style.display = compressEnabled ? 'inline-block' : 'none'; manualBtn.disabled = !!compressInProgress || pending < 2; manualBtn.title = pending < 2 ? 'Not enough sentences to compress' : `Compress now ${pending} pending sentences`; }
+  try { updateContextInspector(); } catch {}
+}
+
+/** Context Inspector — show what LLM actually sees (live vs compressed) */
+function getContextSnapshot() {
+  const en = finalizedEnPhrases;
+  const comp = compressedSummary || '';
+  const enabled = !!compressEnabled;
+  const lastIdx = lastCompressedIdx|0;
+  const pending = en.slice(lastIdx);
+  const pendingStr = pending.join('\n');
+  const total = en.length;
+  const pendingCount = pending.length;
+  // all questions ever detected — pending tab should show all, not just pending segment
+  const allQuestions = en.map((text, idx)=> ({text, idx})).filter(o=> isQuestion(o.text));
+  let liveCtx, liveCount;
+  if (enabled && comp) {
+    const recent = en.slice(-COMPRESS_RECENT_KEEP);
+    liveCount = recent.length;
+    const recentJoined = recent.join(' | ');
+    const recentCtx = recentJoined.length > 1500 ? recentJoined.slice(-1500) : recentJoined;
+    const compPreview = comp.length > COMPRESS_MAX_CHARS ? comp.slice(-COMPRESS_MAX_CHARS) : comp;
+    liveCtx = `Compressed history (${compPreview.length} chars, will be truncated to ${COMPRESS_MAX_CHARS} max):\n${compPreview || '(none)'}\n\nRecent ${liveCount} utterances (budget 1500 chars):\n${recentCtx || '(empty)'}`;
+  } else {
+    const recent = en.slice(-4);
+    liveCount = recent.length;
+    const ctx = recent.join(' | ');
+    const truncated = ctx.length > 1000 ? ctx.slice(-1000) : ctx;
+    liveCtx = `Context last ${liveCount} utterances (budget 1000 chars):\n${truncated || '(empty — speak to fill context)'}`;
+  }
+  return {
+    liveCtx,
+    compressedPreview: comp || '(no compressed history yet — enable 🗜️ and wait for 5m or click Compress now)',
+    pendingSegment: pendingStr || '(nothing pending — all utterances compressed)',
+    pendingList: pending,
+    allQuestions,
+    meta: enabled && comp ? `🗜️ ${comp.length} chars history • ${pendingCount} pending • ${allQuestions.length} questions • live ${liveCount} ctx` : `📝 ${total} total • ${allQuestions.length} questions • live ${liveCount} ctx • ${pendingCount} pending`,
+    stats: { total, liveCount, pendingCount, compressedChars: comp.length, lastIdx, allQuestionsCount: allQuestions.length },
+  };
+}
+function updateContextInspector() {
+  const metaEl = DOM.inspectorMeta || document.getElementById('inspectorMeta');
+  const paneLive = DOM.paneLive || document.getElementById('paneLive');
+  const paneComp = DOM.paneCompressed || document.getElementById('paneCompressed');
+  const panePending = DOM.panePending || document.getElementById('panePending');
+  const snap = getContextSnapshot();
+  if (metaEl) metaEl.textContent = snap.meta;
+  if (paneLive) paneLive.textContent = snap.liveCtx;
+  if (paneComp) paneComp.textContent = snap.compressedPreview;
+  if (panePending) {
+    const qs = snap.allQuestions || [];
+    const pending = snap.pendingList || [];
+    if (!qs.length) {
+      panePending.textContent = `No questions yet — ${pending.length} pending utterances will be compressed next.\n` + (snap.pendingSegment || '');
+    } else {
+      const header = `All questions (${qs.length}) — ${pending.length} pending utterances not yet compressed:\n`;
+      const list = qs.map((o,i)=> `${i+1}. [#${o.idx+1}] ${o.text}`).join('\n');
+      const pendingInfo = pending.length ? `\n\nPending segment (${pending.length}):\n` + pending.map((s,i)=> `${snap.stats.lastIdx+i+1}. ${s}`).join('\n') : '';
+      panePending.textContent = header + list + pendingInfo;
+    }
+  }
+}
+function setupContextInspector() {
+  const toggle = DOM.inspectorToggle || document.getElementById('inspectorToggle');
+  const body = DOM.inspectorBody || document.getElementById('inspectorBody');
+  const chevron = document.getElementById('inspectorChevron');
+  if (!toggle || !body) return;
+  toggle.addEventListener('click', () => {
+    const expanded = toggle.getAttribute('aria-expanded') === 'true';
+    const next = !expanded;
+    toggle.setAttribute('aria-expanded', String(next));
+    body.hidden = !next;
+    body.style.display = next ? 'flex' : 'none';
+    if (chevron) chevron.textContent = next ? '▾' : '▸';
+    if (next) updateContextInspector();
+  });
+  document.querySelectorAll('.inspector-tab').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const tab = btn.getAttribute('data-tab');
+      document.querySelectorAll('.inspector-tab').forEach(b=>{ b.classList.toggle('active', b===btn); b.setAttribute('aria-selected', b===btn ? 'true':'false'); });
+      document.getElementById('paneLive')?.classList.toggle('active', tab==='live');
+      document.getElementById('paneCompressed')?.classList.toggle('active', tab==='compressed');
+      document.getElementById('panePending')?.classList.toggle('active', tab==='pending');
+      if (document.getElementById('paneLive')) document.getElementById('paneLive').hidden = tab!=='live';
+      if (document.getElementById('paneCompressed')) document.getElementById('paneCompressed').hidden = tab!=='compressed';
+      if (document.getElementById('panePending')) document.getElementById('panePending').hidden = tab!=='pending';
+    });
+  });
+  const copyBtn = DOM.copyContextBtn || document.getElementById('copyContextBtn');
+  if (copyBtn) copyBtn.addEventListener('click', async ()=>{
+    const activePane = document.querySelector('.inspector-pane.active') || document.getElementById('paneLive');
+    const txt = activePane ? activePane.textContent : '';
+    try { await navigator.clipboard.writeText(txt); showToast('Context copied','success'); } catch { showToast('Copy failed','error'); }
+  });
+  // initial
+  updateContextInspector();
 }
 
 /** @returns {Promise<boolean>} */
@@ -700,13 +907,17 @@ function handleRecognitionEnd() {
   } else updateUIForListening(false);
 }
   
-// Hoisted regexes — compiled once, pure (improved 2026-09-19)
+// Hoisted regexes — compiled once, pure (improved 2026-09-20)
 const RE_WH_START = /^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's)\b/i;
+const RE_WH_ABOUT = /^(what about|how about)\b/i;
+const RE_CASUAL_Q = /^(wanna|lemme|gimme|dunno)\b/i;
 const RE_AUX_START = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't|is there|are there|was there|were there|have there|has there|what's|how's|where's|who's)\b/i;
 const RE_TAG_Q = /,\s*(right|correct|isn't it|aren't you|don't you|doesn't it|doesn't he|doesn't she|didn't you|won't you|wouldn't you|haven't you|hasn't he|is it|are you|wasn't it|weren't you|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
 const RE_TAG_Q_NOCOMMA = /\b(right|okay|ok|yeah|yep|huh)\s*\??\s*$/i;
 const RE_EMBEDDED = /\b(do you|does he|does she|do they|did you|did he|did she|are you|is he|is she|are they|is there|are there|was there|were there|can you|could you|would you|will you|shall we|should you|should we|have you|has he|has she|had you|am i|would you mind|could you please|can you please|will you please|do you know|do you think|have you ever|would you like|could you tell|can you tell|are you going|is he going|will you be|have you been|has anyone|did anyone|did you ever|could you kindly|would you kindly|how are you|how is it|what do you|where are you|when are you|why are you|who are you)\b/i;
-const RE_INDIRECT = /^(do you know|can you tell|would you mind|could you explain|have you ever|are you familiar|do you think|would you say|is there any|are there any|tell me|let me know|any idea|anyone know|anybody know|everyone know|any chance|could you share|would you happen)\b/i;
+const RE_INDIRECT = /^(do you know|can you tell|would you mind|could you explain|have you ever|are you familiar|do you think|would you say|is there any|are there any|tell me|let me know|any idea|anyone know|anybody know|everyone know|any chance|could you share|would you happen|i was wondering if|wondering if|any chance you could|is there a chance)\b/i;
+const RE_WONDERING = /\b(i was wondering if|i wonder if|wondering if|do you mind if|would you mind if)\b/i;
+const RE_POLITE = /\b(could you maybe|would you maybe|could you kindly|would you kindly|would you please|could you please|would you be able to|could you be able to|could you just|would you just)\b/i;
 const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
 const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
 
@@ -720,6 +931,11 @@ function normalizeForQuestion(raw){
   s=s.replace(/\b(you)estion\b/gi,'$1');
   s=s.replace(/\b(how)estion\b/gi,'$1');
   s=s.replace(/\b(what)estion\b/gi,'$1');
+  s=s.replace(/\bwanna\b/gi,'want to');
+  s=s.replace(/\bgonna\b/gi,'going to');
+  s=s.replace(/\bgotta\b/gi,'got to');
+  s=s.replace(/\blemme\b/gi,'let me');
+  s=s.replace(/\bgimme\b/gi,'give me');
   s=s.replace(/\s+/g,' ').trim();
   return s;
 }
@@ -735,6 +951,7 @@ function isQuestion(text) {
   if (!rawIn) return false;
   if (rawIn.length < 3) return false;
   if (rawIn.includes('?')) return true;
+  if (RE_CASUAL_Q.test(rawIn.trim())) return true;
   const raw = normalizeForQuestion(rawIn);
   if (raw.includes('?')) return true;
   if (!raw || raw.length < 3) return false;
@@ -795,6 +1012,8 @@ function isQuestion(text) {
   const startsDeclarative = RE_DECLARATIVE_FALSE.test(t) && !hasTag && !RE_TRAILING_OR.test(t) && !RE_EMBEDDED.test(t);
   if (startsDeclarative && !RE_WH_START.test(t) && !RE_AUX_START.test(t)) return false;
 
+  if (RE_WH_ABOUT.test(t) && wc >= 2 && !t.endsWith('!')) return true;
+  if (RE_CASUAL_Q.test(t) && wc >= 2) return true;
   if (RE_WH_START.test(t)) {
     if (wc >= 2 && !t.endsWith('!')) return true;
   }
@@ -802,10 +1021,144 @@ function isQuestion(text) {
   if (RE_TAG_Q.test(t)) return true;
   if (isNoCommaTag(t, wc)) return true;
   if (RE_EMBEDDED.test(t) && wc >= 4) return true;
+  if (RE_WONDERING.test(t) && wc >= 4) return true;
+  if (RE_POLITE.test(t) && wc >= 4) return true;
   if (RE_INDIRECT.test(lower) && wc >= 3) return true;
   if (RE_TRAILING_OR.test(t) && wc >= 4) return true;
 
   return false;
+}
+
+// === AI supplement for question detection (cost-controlled) ===
+const AI_DETECT_CACHE = new Set(); // dedup by text hash to avoid duplicate LLM calls
+function _aiCacheKey(t){ return String(t||'').trim().toLowerCase().slice(0,120); }
+function shouldTriggerAiSplitSide(text){
+  const t=String(text||'').trim(); if(!t||t.length<15) return false;
+  const words=t.toLowerCase().split(/\s+/).filter(Boolean); if(words.length<6) return false;
+  const termCount=(t.match(/[.!?]+/g)||[]).length; if(termCount>=2) return false;
+  const lower=t.toLowerCase();
+  const whCount=(lower.match(/\b(who|what|when|where|why|how|which|whom|whose|whether)\b/gi)||[]).length;
+  const auxCount=(lower.match(/\b(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare)\b/gi)||[]).length;
+  if(whCount>=2) return true;
+  if(auxCount>=2 && words.length>=7) return true;
+  if(whCount>=1 && auxCount>=1 && words.length>=8){
+    const re=/\b(who|what|when|where|why|how|which|is|are|was|were|am|do|does|did|can|could|will|would|shall|should|have|has|had)\b/gi;
+    const markers=[]; let m; while((m=re.exec(lower))!==null) markers.push(m.index);
+    if(markers.length>=2 && markers[1]-markers[0]>12) return true;
+  }
+  return false;
+}
+function shouldTriggerAiFalseNegativeSide(text, localIsQ){
+  if(localIsQ) return false; const t=String(text||'').trim(); if(!t) return false;
+  const words=t.toLowerCase().split(/\s+/).filter(Boolean); if(words.length<5||words.length>22) return false;
+  if(t.includes('?')) return false;
+  if(/\b(wondering if|do you mind|any idea|any chance|tell me|let me know|anyone know)\b/i.test(t)) return true;
+  if(/\b(or not|or what|right|okay|yeah|huh)\s*$/i.test(t) && words.length>=4) return true;
+  if(words.length>=6 && /\b(do you|are you|is there|can you|could you|would you|have you|has anyone)\b/i.test(t.toLowerCase())) return true;
+  return false;
+}
+function shouldTriggerAiDetectSide(text, localIsQ){ return shouldTriggerAiSplitSide(text) || shouldTriggerAiFalseNegativeSide(text, localIsQ); }
+function buildAiDetectPromptSide(text){
+  const safe=sanitizePromptContext(String(text||'').slice(0,800));
+  const prompt=`You are a question extractor for live English meeting transcripts.\n\nTask: Given a transcript block, extract all distinct questions. Return JSON only.\n\nInput block: """${safe}"""\n\nRules:\n- Split on missing punctuation too (e.g. "Where are you from where were you born" -> 2 questions).\n- Keep each question as a complete sentence (3-20 words), without trailing "?".\n- If block has no question, return empty array.\n- If block has 1 question, return array with 1 element.\n- If block has 2-4 questions, return each as separate element.\n- Do NOT hallucinate: only use words from input block.\n\nOutput ONLY JSON: {"questions":["question 1","question 2"]}`;
+  const systemPrompt='You are a precise question extractor. Output ONLY JSON with "questions" array. No markdown.';
+  return {prompt, systemPrompt};
+}
+function parseAiDetectResponseSide(raw){
+  if(!raw||typeof raw!=='string') return []; let s=raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/i,'').trim();
+  try{ const m=s.match(/\{[\s\S]*\}/); if(m){ const obj=JSON.parse(m[0].replace(/,\s*([}\]])/g,'$1')); if(obj&&Array.isArray(obj.questions)) return obj.questions.slice(0,4).map(q=>String(q).trim()).filter(q=>q.length>=5&&q.length<=200).map(q=>q.replace(/\s+/g,' ').trim()); if(Array.isArray(obj)) return obj.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch(_){}
+  try{ const m2=s.match(/\[[\s\S]*\]/); if(m2){ const arr=JSON.parse(m2[0].replace(/,\s*([}\]])/g,'$1')); if(Array.isArray(arr)) return arr.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch(_){}
+  return [];
+}
+function validateAiQuestionsSide(original, questions){
+  if(!Array.isArray(questions)||questions.length===0) return [];
+  const origLower=String(original||'').toLowerCase(); const origWords=new Set(origLower.split(/\s+/).filter(Boolean)); const out=[];
+  for(const q of questions){ const t=String(q).trim(); if(!t||t.length<5||t.length>250) continue; const qWords=t.toLowerCase().split(/\s+/).filter(Boolean); let hit=0; for(const w of qWords) if(origWords.has(w)) hit++; if(qWords.length>=3 && hit/qWords.length<0.5) continue; if(out.includes(t)) continue; out.push(t); }
+  if(out.length>=2){ const joinedLen=out.join(' ').length; const origLen=String(original).trim().length; if(joinedLen<origLen*0.5||joinedLen>origLen*1.4) return []; }
+  return out.slice(0,4);
+}
+async function detectQuestionsViaAiSide(text){
+  const t=String(text||'').trim(); if(!t) return [];
+  if(!providerConfig||!providerConfig.baseUrl||!providerConfig.model) return [];
+  const isLocal=String(providerConfig.baseUrl).includes('localhost')||String(providerConfig.baseUrl).includes('127.0.0.1');
+  if(!providerConfig.apiKey&&!isLocal) return [];
+  const key=_aiCacheKey(t); if(AI_DETECT_CACHE.has(key)) return []; // already tried
+  AI_DETECT_CACHE.add(key); if(AI_DETECT_CACHE.size>200){ const first=AI_DETECT_CACHE.values().next().value; AI_DETECT_CACHE.delete(first); }
+  const {prompt, systemPrompt}=buildAiDetectPromptSide(t);
+  const raw=await callProviderGeneric(prompt,{temperature:0.2,maxTokens:256,systemPrompt});
+  const parsed=parseAiDetectResponseSide(raw);
+  return validateAiQuestionsSide(t,parsed);
+}
+async function splitUtteranceAtSide(idx, newQs){
+  if(!Array.isArray(newQs)||newQs.length<2) return false;
+  const oldLen=finalizedEnPhrases.length; if(idx<0||idx>=oldLen) return false;
+  // prevent infinite: if newQs combined equals old roughly and each valid
+  const oldText=finalizedEnPhrases[idx];
+  // splice arrays
+  const speaker=utteranceSpeakers[idx]!==undefined?utteranceSpeakers[idx]:currentSpeakerId;
+  finalizedEnPhrases.splice(idx,1,...newQs);
+  finalizedViPhrases.splice(idx,1,...newQs.map(_=>'…'));
+  utteranceSpeakers.splice(idx,1,...newQs.map(_=>speaker));
+  // splice DOM cache: remove old root, insert new ones
+  // shift suggestion map + selected idx
+  const shift=newQs.length-1;
+  // remap questionSuggestions > idx
+  const nextQ={}; for(const k of Object.keys(questionSuggestions)){ const ki=Number(k); if(ki<idx) nextQ[ki]=questionSuggestions[ki]; else if(ki===idx) {/* drop old */} else if(ki>idx) nextQ[ki+shift]=questionSuggestions[ki]; }
+  questionSuggestions=nextQ;
+  if(selectedQuestionIdx!==null){
+    if(selectedQuestionIdx===idx) selectedQuestionIdx=null;
+    else if(selectedQuestionIdx>idx) selectedQuestionIdx+=shift;
+  }
+  // remap compress pointer
+  if(lastCompressedIdx>idx) lastCompressedIdx+=shift;
+  // DOM: remove old root if exists
+  const oldCache=utteranceDomCache[idx];
+  if(oldCache&&oldCache.root&&oldCache.root.parentNode){ try{ oldCache.root.remove(); }catch{} }
+  // rebuild cache array: splice
+  utteranceDomCache.splice(idx,1);
+  // insert new DOMs sequentially; due to prepend (newest on top) we need to insert in reverse visual order
+  // simplest: rebuild all after idx by recreating via appendUtterance for new indices, then reindex remaining
+  // create new caches for newQs
+  const newCaches=[];
+  for(let i=0;i<newQs.length;i++){
+    const nIdx=idx+i;
+    const en=newQs[i]; const vi='…';
+    // temporarily set arrays already spliced, so build
+    const cache=buildUtteranceDom(nIdx,en,vi);
+    cache._speakerId=speaker; applySpeakerToDom(cache,speaker);
+    newCaches.push(cache);
+  }
+  utteranceDomCache.splice(idx,0,...newCaches);
+  // reindex all after idx+newQs.length
+  for(let i=idx+newQs.length;i<utteranceDomCache.length;i++){ const c=utteranceDomCache[i]; if(c&&c.root) c.root.dataset.index=i; }
+  // also reindex before idx stays
+  for(let i=0;i<idx;i++){ const c=utteranceDomCache[i]; if(c&&c.root) c.root.dataset.index=i; }
+  // translate new utterances
+  const tasks=[]; for(let i=0;i<newQs.length;i++){ const nIdx=idx+i; tasks.push({idx:nIdx,text:newQs[i],cache:utteranceDomCache[nIdx]}); }
+  // fire translate without blocking caller
+  translateBatchConcurrent(tasks, MAX_CONCURRENT_TRANSLATE).catch(()=>{});
+  // trigger suggest for each new question
+  for(let i=0;i<newQs.length;i++){ const nIdx=idx+i; const q=newQs[i]; if(isQuestion(q)) triggerSuggestForIndex(nIdx,q); }
+  syncState(); updateDock(); try{ updateContextInspector(); }catch{}
+  autoScroll(true);
+  return true;
+}
+async function handleAiVerifyForIndexSide(idx, originalText){
+  try{
+    const localIsQ=isQuestion(originalText);
+    if(!shouldTriggerAiDetectSide(originalText, localIsQ)) return;
+    const qs=await detectQuestionsViaAiSide(originalText);
+    if(!qs||qs.length===0) return;
+    // false negative: local false but AI found 1
+    if(!localIsQ && qs.length===1){
+      const q=qs[0]; if(q&&q.length>=5) { triggerSuggestForIndex(idx,q); const cc=utteranceDomCache[idx]; if(cc&&cc.root) cc.root.classList.add('question'); }
+      return;
+    }
+    if(qs.length>=2){
+      const validQs=qs.filter(q=> isQuestion(q) || q.split(/\s+/).filter(Boolean).length>=4 );
+      if(validQs.length>=2) await splitUtteranceAtSide(idx, validQs);
+    }
+  }catch(e){ console.warn('[aiDetect]',e&&e.message||e); }
 }
 
 function buildSuggestPrompt(question, contextEn) {
@@ -1005,10 +1358,39 @@ async function performCompression(isManual = false) {
   if (segment.length > 8000) segment = segment.slice(-8000);
   if (!segment.trim() || segment.trim().length < 10) return;
   compressInProgress = true;
-  showStatus('Compressing history…');
+  showStatus('Compressing history… (agent)');
   try {
-    const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${segment}"""`;
-    const summary = await callProviderGeneric(prompt, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
+    // Compression Agent (LLM + harness tools) — QA-aware, single-shot, no loop needed
+    // Mirrors src/utils/buildCompressPrompt.js + src/harness/agent/compression.agent.js
+    function _isValidCompressSummary(s) {
+      if (!s || typeof s !== 'string') return false;
+      const t = String(s).trim();
+      if (t.length < 20) return false;
+      const lines = t.split('\n').map(l=>l.trim()).filter(Boolean);
+      if (!lines.length) return false;
+      const bullets = lines.filter(l=>/^[-•*]\s+/.test(l)).length;
+      return bullets > 0;
+    }
+    function _buildCompressPrompt(seg, cnt, existingSummary, recentQsArr) {
+      const qs = recentQsArr.join(' | ') || '(none yet)';
+      const existing = existingSummary ? `\nExisting compressed history (keep continuity, don't duplicate):\n"""${sanitizePromptContext(existingSummary.slice(-2000))}"""` : '';
+      const safeSeg = sanitizePromptContext(String(seg||'').slice(-8000));
+      const prompt = `You are a compression agent for a live EN→VI meeting that supports answering questions.\n\nGoal: Compress the pending transcript segment into 3-5 bullet points (max 150 words, English) that PRESERVE information most useful for answering future questions. Prioritize: names, topics, decisions, questions asked, facts that could be referenced later.${existing}\n\nRecent questions in this meeting (prioritize preserving context for similar future questions):\n"""${sanitizePromptContext(qs)}"""\n\nPending segment to compress (${cnt} utterances):\n"""${safeSeg}"""\n\nOutput ONLY bullet points (each starting with "- "), no intro, no extra text.`;
+      const systemPrompt = 'You are a precise meeting compression agent. Output only bullet points useful for future QA.';
+      return { prompt, systemPrompt };
+    }
+    let summary;
+    try {
+      const recentQsArr = Object.values(questionSuggestions).slice(-5).map(v=>v.question);
+      const { prompt: agentPrompt, systemPrompt: agentSystem } = _buildCompressPrompt(segment, pendingCount, compressedSummary, recentQsArr);
+      summary = await callProviderGeneric(agentPrompt, { temperature: 0.3, maxTokens: 320, systemPrompt: agentSystem });
+      if (!_isValidCompressSummary(summary)) throw new Error('Agent returned invalid summary');
+    } catch (agentErr) {
+      console.warn('[compress agent fallback]', agentErr.message);
+      const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${sanitizePromptContext(segment)}"""`;
+      summary = await callProviderGeneric(prompt, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
+      if (!_isValidCompressSummary(summary)) throw new Error('Fallback summary invalid');
+    }
     const clean = String(summary||'').trim();
     if (!clean) { if (isManual) showToast('Compression returned empty','error'); return; }
     const header = `\n[+${pendingCount} utterances @ ${new Date().toLocaleTimeString()}]`;
@@ -1244,7 +1626,7 @@ function renderDockBody() {
       html += `<div class="dock-complete-label">Complete answers</div>`;
       html += data.answers.map(a=>`
         <div class="dock-complete-card">
-          <span style="flex:1">${escapeHtml(a)}</span>
+          <span class="answer-text">${escapeHtml(a)}</span>
           <button class="copy-btn" data-text="${escapeHtml(a).replace(/"/g,'&quot;')}">Copy</button>
         </div>
       `).join('');
@@ -1486,6 +1868,8 @@ async function finalizeText(text) {
     if (isQuestion(cleanText)) {
       triggerSuggestForIndex(idx, cleanText);
     }
+    // AI supplement: non-blocking verify for multi-question / false-negative (only when suspicious)
+    handleAiVerifyForIndexSide(idx, cleanText).catch(()=>{});
     updateCompressToggleUI();
     return;
   }
@@ -1558,7 +1942,12 @@ async function finalizeText(text) {
       triggerSuggestForIndex(firstIdx + k, u);
     }
   });
-  updateCompressToggleUI();
+  // AI supplement: verify each utterance only when suspicious (cost-controlled, async)
+  utterances.forEach((u, k) => {
+    const idx = firstIdx + k;
+    handleAiVerifyForIndexSide(idx, u).catch(()=>{});
+  });
+  updateCompressToggleUI(); try { updateContextInspector(); } catch {}
 }
 
 /** @param {string} text @param {number} rawLength @returns {Promise<void>} */

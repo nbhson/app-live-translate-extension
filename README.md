@@ -2,7 +2,7 @@
 
 Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 5-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
-Version **1.0.1** · MV3 · MIT
+Version **1.3.0** · MV3 · MIT · [Harness & Compression Agent](harness.md)
 
 ![Live Translate Demo](<Screenshot 2026-09-19 at 14.47.07.png>)
 
@@ -13,9 +13,9 @@ Version **1.0.1** · MV3 · MIT
 ```mermaid
 flowchart TB
     subgraph Extension["Chrome Extension (MV3)"]
-        BG["background.js<br/>(service worker)<br/>tabCapture.getMediaStreamId (Tab Audio)"]
-        SP["sidepanel.html / sidepanel.js<br/>(side panel runtime ~2450 lines)"]
-
+        BG["background.js<br/>(service worker)<br/>isCapturableTab"]
+        SP["sidepanel.html / sidepanel.js<br/>(2713 lines + Harness facade)"]
+        HARNESS["src/harness/<br/>ports · chrome · storage · speech · audio · llm · translate<br/>createHarness() composition root"]
         subgraph Modules["src/ — modular ESM (testable)"]
             UTILS["src/utils<br/>isQuestion · splitIntoUtterances<br/>buildSuggestPrompt · parseSuggestAnswers<br/>sanitizePromptContext · escapeHtml<br/>computeSpectralCentroid · shouldToggleSpeaker"]
             SRV["src/services<br/>translate/ · llm/ · speech/ · storage"]
@@ -40,12 +40,15 @@ flowchart TB
     MIC -->|"getUserMedia(audio)"| SP
     SP -->|"fetch"| GOOG
     SP -->|"fetch POST generateContent / chat/completions"| LLM
-    UTILS <--> SP
+    HARNESS <--> SP
+    HARNESS <--> SRV
+    HARNESS <--> STORE
+    UTILS <--> HARNESS
     SRV <--> STORE <--> UTILS
-    SRV -.->|"future ESM entry (dist/main.js not loaded yet)"| SP
+    HARNESS -.->|"dist/main.js 79.5kB (ESM, future entry)"| SP
 ```
 
-> **Important note:** the actual runtime file is **`sidepanel.js`** (non-module, loaded directly in `sidepanel.html`). The **`src/`** modules are an equivalent refactored version, covered by Vitest and built by Vite into `dist/main.js` — but `sidepanel.html` **currently comments out** the `<script type="module" src="dist/main.js">` tag, so `src/` is dead code at runtime. Both must stay mirrored. All changes below are synced in both places.
+> **Harness 1.1.0:** `src/harness/*` (7 files) là tầng duy nhất tiếp xúc `chrome`/`window`/`fetch`. Core (`src/services`, `utils`, `store`) chỉ import từ `harness`. `sidepanel.js:139` thêm `Harness` facade (delegate, không xóa logic cũ) nên UI không break. Chi tiết xem [harness.md](harness.md). `src/` không còn dead-code — `src/main.js` là composition root `createHarness()` và build `dist/main.js`.
 
 ---
 
@@ -54,11 +57,11 @@ flowchart TB
 - **Realtime Transcription**: Web Speech API (`en-US`, `continuous` + `interimResults`), `SILENCE_THRESHOLD = 900ms`.
 - **Auto EN→VI Translation**: Google Translate free API per utterance, `>4200 chars` chunking, retry/backoff, 500-entry LRU cache.
 - **Tab Audio & Mic**: `chrome.tabCapture.getMediaStreamId` + loopback via `AudioContext`, fallback to mic if tab is not capturable.
-- **AI Answer Suggestions**: `isQuestion()` detects questions → `buildSuggestPrompt()` → LLM → `parseSuggestAnswers()` → Suggestion Dock (Both / Structure / Complete).
+- **AI Answer Suggestions**: `isQuestion()` local gate → hybrid AI verify (`shouldTriggerAiDetect` + `questionDetect` LLM) for multi-question split (`Where are you from where were you born` → 2 pills) → `buildSuggestPrompt()` → LLM → `parseSuggestAnswers()` → Suggestion Dock (Both / Structure / Full, resizable + collapsible prompt).
 - **Rolling 5-Minute Compress**: `🗜️ Compress 5m` toggle — compresses history every 5 minutes into bullet summaries; follow-up prompts use `compressed history + 10 most recent sentences`.
 - **AI Summary**: `generateSummary()` supports native Gemini (`:generateContent`) and OpenAI-compatible (`/chat/completions`).
 - **Speaker diarization heuristic**: Local VAD (RMS + spectral centroid) to distinguish 2 speakers.
-- **UI**: Single transcript feed (EN white / VI yellow), reverse layout — *newest on top*, live block + typing indicator, detached suggestion dock.
+- **UI**: Single transcript feed (EN white / VI yellow), reverse layout — *newest on top*, live block + typing indicator, suggestion dock `62%` default / `78%` expanded, resizable handle, collapsible Context prompt, Context Inspector `Questions` tab shows **all questions**.
 
 ---
 
@@ -187,13 +190,23 @@ flowchart TD
 
 ---
 
-## Flow 4 — Question Detection & AI Answer Suggestions
+## Flow 4 — Question Detection & AI Answer Suggestions (hybrid local + LLM)
 
 ```mermaid
 flowchart TD
-    A["finalizeText → utterance EN"] --> B["isQuestion(utterance)"]
-    B -- "Not a question" --> END["Skip (no LLM call)"]
-    B -- "Is a question" --> C["triggerSuggestForIndex(idx, question)"]
+    A["finalizeText → utterance EN"] --> B["isQuestion(utterance) local (<1ms)"]
+    B -- "question" --> C["triggerSuggestForIndex(idx, question) immediate"]
+    B -- "not question" --> B2{"shouldTriggerAiFalseNegative?"}
+    B2 -- "yes (wondering/any idea/tag)" --> D1["AI verify: detectQuestionsViaAI"]
+    B2 -- "no" --> END["Skip"]
+    A --> S{"shouldTriggerAiSplit? (2x WH/AUX, no ?)"}
+    S -- "yes" --> D1
+    S -- "no" --> C
+
+    D1 --> Q{"AI returns questions[]?"}
+    Q -- "0" --> END
+    Q -- "1 + local false" --> C
+    Q -- ">=2" --> SPLIT["splitUtteranceAt(idx, qs)<br/>splice EN/VI/speakers/DOM + translate + suggest xN"]
 
     C --> D{"suggestEnabled && provider configured?"}
     D -- "Not configured" --> E["questionSuggestions[idx] = {state:'error'}"]
@@ -208,8 +221,9 @@ flowchart TD
     K -- "Yes" --> L["synthesizeStructures(ans) fallback"]
     K -- "No" --> M["slice(0,3) structures + answers"]
     L --> M
-    M --> N["updateDock() + updateSuggestCard(idx)<br/>Suggestion Dock: pills + Both/Structure/Complete"]
+    M --> N["updateDock() + updateSuggestCard(idx)<br/>Suggestion Dock: pills + Both/Structure/Full (resizable 62%→78%, collapsible prompt)"]
     E --> N
+    SPLIT --> N
 ```
 
 **`isQuestion()` — detection layers** (`sidepanel.js:704-717`, `src/utils/isQuestion.js:1-8`):
@@ -229,7 +243,11 @@ flowchart TD
 
 **`splitIntoUtterances()`** (`sidepanel.js:1232`, `src/utils/splitIntoUtterances.js:1-43`): `SENT_END_RE` + `ABBREVS` merge → iterative queue → `STRONG_SPLIT how/what/...` (prefix≥3) → `hows/whats` → `findQuestionDeclarativeSplit` Q→A (`what's your name`→`my name is Esther`) → comma-split → `isNoiseUtterance` filters `S`/`h one...`→`one...`, normalizes `e okay`/`youestion`.
 
-**`triggerSuggestForIndex` in parallel**: removed serial `suggestQueue`, each `isQuestion` sets `loading` then calls `callProviderForSuggest` in parallel; `updateDock` auto-scrolls pills bar (`scrollLeft=scrollWidth` + `scrollIntoView` active).
+**Hybrid AI supplement — `shouldTriggerAiDetect` + `questionDetect`** (`src/utils/shouldTriggerAiDetect.js`, `src/services/llm/questionDetect.js`, mirrored `sidepanel.js:956`):
+- Gate `shouldTriggerAiSplit` (2× WH/AUX, no `?`, `words≥6`) + `shouldTriggerAiFalseNegative` (`wondering if`/`any idea`/tag) → only ~5-10% utterances call LLM.
+- `buildDetectPrompt` → `{"questions":["q1","q2"]}` (temp 0.2, maxTokens 256, validate 50% word overlap, dedup cache 200). If `local false + AI 1` → `triggerSuggest`; if `AI ≥2` → `splitUtteranceAt` (splice EN/VI/speakers/DOM, re-translate, re-suggest).
+
+**`triggerSuggestForIndex` in parallel**: removed serial `suggestQueue`, each `isQuestion` sets `loading` then calls `callProviderForSuggest` in parallel; `updateDock` auto-scrolls pills bar (`scrollLeft=scrollWidth` + `scrollIntoView` active). Dock is now resizable (drag handle, double-click expand 62%→78%) and `Suggestion Context` is collapsible (collapsed by default).
 
 **`buildSuggestPrompt()`** — injection protection: `sanitizePromptContext` replaces `"""` → `"'"` before embedding in prompt block; `truncateForPrompt` caps recent context (1500 chars compressed / 1000 chars normal).
 
@@ -237,7 +255,7 @@ flowchart TD
 - `fetchWithTimeout(url, opts, timeout)` — internal AbortController linked to external `signal`.
 - `fetchWithRetry(url, opts, timeout, maxRetries=2)` — retry on 429/500/502/503/504 + `Retry-After`, drains body.
 - `callProviderForSuggest` — mandatory "ONLY JSON" systemPrompt (OpenAI-compatible), Gemini uses `temperature 0.8, maxOutputTokens 512`.
-- `callProviderGeneric(prompt, cfg, {temperature=0.4, maxTokens=512, systemPrompt, timeout=25000})` — used for compression.
+- `callProviderGeneric(prompt, cfg, {temperature=0.4, maxTokens=512, systemPrompt, timeout=25000})` — used for compression + questionDetect (0.2/256).
 
 **`parseSuggestAnswers()`** — strips JSON code fence wrapper (including `` ```json ... ``` `` blocks), `tryParseJson` (removes trailing commas), accepts `{structures,answers}` or single array, fallback to bullet lines (≥3 chars), limit 5.
 
@@ -274,6 +292,8 @@ sequenceDiagram
 ```
 
 When compression is on, `triggerSuggestForIndex` takes `contextSlice = finalizedEnPhrases.slice(max(0, idx-COMPRESS_RECENT_KEEP+1), idx+1)` (10 sentences) instead of 4.
+
+**Context Inspector** (`src/ui/components/contextInspector.js` / `sidepanel.js:377`): `Pending` tab now shows **all questions** (`allQuestions = en.filter(isQuestion)`, not just `pendingSegment`), with `[#idx]` + header `All questions (N) — pending …`. `Live` tab = prompt that will be sent for next Q (compressed history + recent), `History` = `compressedSummary`.
 
 ---
 
@@ -433,9 +453,9 @@ optional_host:      https://*/*            (add if custom URL needed → validat
 
 ```bash
 npm install
-npm test               # vitest run --coverage  (9 suites / 61 tests)
+npm test               # vitest run --coverage  (20 suites / 166 tests)
 npm run test:watch
-npm run build          # vite build → dist/main.js (43.6 kB, gzip 14.7 kB)
+npm run build          # vite build → dist/main.js (91.1 kB, gzip 27.9 kB)
 node --check sidepanel.js   # syntax check runtime script
 ```
 
@@ -450,33 +470,51 @@ node --check sidepanel.js   # syntax check runtime script
 ```
 tests/
   buildSuggestPrompt.test.js      — 4 ctx vs compress 10 ctx + 3000 truncation, sanitize triple-quotes, context injection
-  isQuestion.test.js              — 14 cases (?, WH-start, aux, tag, embedded, indirect, exclamation, declarative trap, STT noise s/n+youestion, no-comma tag, comma-concat)
-  splitIntoUtterances.test.js     — 12 cases (empty, punctuation, WH keep, mid-split how, abbrev merge Mr./Dr., Safari fallback, STT normalize, comma-concat, no-punct concat)
+  isQuestion.test.js              — 17 cases (?, WH-start, aux, tag, embedded, indirect, exclamation, declarative trap, STT noise s/n+youestion, no-comma tag, comma-concat, what/how about, wondering/polite)
+  splitIntoUtterances.test.js     — 15 cases (empty, punctuation, WH keep, mid-split how, abbrev merge Mr./Dr., Safari fallback, STT normalize, comma-concat, no-punct concat, multi Q+A)
   parseSuggestAnswers.test.js     — object/array/bullet fallback, limit 5, synthesizeStructures, code fence
   sanitizePromptContext.test.js   — trim/slice, null-safe, triple-quote escape (matches new fix)
+  contextInspector.test.js        — live/compressed/empty + allQuestions count + truncates
   isCapturableTab.test.js         — schemes, chrome://, about:, blocked hosts
   computeSpectralCentroid.test.js — edge & branch
   shouldToggleSpeaker.test.js     — rms/centroid diff, debounce window
   escapeHtml.test.js              — entities
+  harness.test.js / compressionAgent.test.js — Harness 6 ports + Compression Agent 3 tools
 ```
 
-> **On tests:** `src/services/*` currently has 0% coverage (no test files). `src/utils` ~94–100%.
+> **On tests:** `src/utils` ~94–100%, `src/services/translate` 89%, `src/services/llm` 93%, `src/harness` 46% (mới). Xem `harness.md:5` chi tiết.
 
 ## File map
 
 | File | Role | Notes |
 |---|---|---|
-| `sidepanel.js` | Main runtime (side panel logic + UI) | ~2457 lines; mirrors `src/` modules |
-| `sidepanel.html` / `sidepanel.css` | Layout & style | `dist/main.js` script currently commented out |
-| `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | mirrors `src/background/isCapturableTab.js` |
+| `sidepanel.js` | Main runtime + `Harness` facade (`sidepanel.js:139`) | ~3100 lines; delegate tới `Harness.*` + hybrid AI questionDetect + resizable dock |
+| `sidepanel.html` / `sidepanel.css` | Layout & style | `dist/main.js` (91 kB) sẵn sàng; dock resizer + collapsible prompt + expanded 78% |
+| `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | dùng `isCapturableTab` pure |
 | `manifest.json` | MV3 manifest, permissions, icons | |
 | `permission.html` / `permission.js` | Mic/capture permission overlay | |
-| `src/…` | Modular duplicates (testable, build target) | not loaded at runtime |
-| `tests/` | Vitest suites | 61 tests |
+| `src/harness/*` | Harness layer — 7 files, Ports/Adapters | composition root `createHarness()`, injectable mocks, xem `harness.md` |
+| `src/main.js` | ESM entry — `createHarness()` + re-export | Vite build `dist/main.js` |
+| `src/services/llm/questionDetect.js` | AI supplement for question split | `buildDetectPrompt`/`detectQuestionsViaAI` (temp 0.2) |
+| `src/utils/shouldTriggerAiDetect.js` | Gate for AI calls | `shouldTriggerAiSplit/FalseNegative` (~5-10% LM calls) |
+| `src/ui/components/contextInspector.js` | Context Inspector | `allQuestions` (pending tab = all questions) + live/compressed |
+| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 166 tests |
+| `tests/` | Vitest suites | 166 tests (20 suites, gồm harness + compressionAgent) |
 | `lib/compromise.min.js` | Optional NLP for isQuestion | improves accuracy if loaded |
+| `harness.md` | Kiến trúc Harness chi tiết | Ports, Adapters, flows, checklist không-break |
 
 ## Changelog
 
+- **2026-09-20**: Pending all-questions + Suggestion dock tối ưu + Hybrid AI detect:
+  - `contextInspector` (`src/ui/components/contextInspector.js:18`, `sidepanel.js:377`): `Pending` tab → **All questions** (`en.filter(isQuestion)` với `allQuestionsCount`, meta `• N questions`), giữ `pendingList` cho compress.
+  - `sidepanel.html:146` + `sidepanel.css:589`: dock `62%→78%`, `dock-resizer` drag (persist `localStorage dockHeight`), `dock-expand-btn` ⛶, `Suggestion Context` collapsible (collapsed mặc định, auto-expand khi có value/focus), `Full` tab (rút gọn từ Full sentences), `Questions` tab (từ Pending).
+  - Hybrid AI supplement (`src/utils/shouldTriggerAiDetect.js`, `src/services/llm/questionDetect.js`, `sidepanel.js:956`): gate `shouldTriggerAiSplit/FalseNegative` chỉ ~5-10% utterances gọi LLM `temp 0.2/256`, `validate 50% overlap`, `splitUtteranceAt` splice DOM + re-translate/re-suggest; false-negative `I was wondering…` → suggest.
+- **2026-09-19d (Harness)**: Nâng lên tầng Harness — không break UI:
+  - Thêm `src/harness/*` (7 files): `ports.js`, `index.js:createHarness()`, `storage/chrome/speech/audio/llm/translate.harness.js` — isolate `chrome/window/fetch`, injectable mocks.
+  - `src/main.js:1` thành composition root `createHarness()` (build `dist/main.js` 79.5 kB).
+  - `sidepanel.js:139` thêm `Harness` facade `Object.freeze` + `window.Harness` (delegate, hoisted, không xóa function cũ).
+  - `tests/harness.test.js:1` 8 tests mới → 151 tests pass, coverage 65.8%.
+  - Thêm `harness.md` (kiến trúc, ports, flows, checklist), update `README.md` diagram + file map.
 - **2026-09-19c**: Fix fragment merge + filter structure vs complete answer mixing:
   - `isQuestion`: guard incomplete fragment `…to/for/with` (wait for next chunk), strip generic single-char noise `o success → success`, expanded single-char prefix strip for `okay/right/how's/what's`.
   - `parseSuggestAnswers` (`sidepanel.js:1042`, `src/utils/parseSuggestAnswers.js:1`): filter `answers` that look like structures (`" + "` + <12 words), keep `structures` separate — don't copy `structures → answers`.

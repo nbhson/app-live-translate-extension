@@ -591,21 +591,49 @@ body {
 #transcriptSection { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #transcriptSection .panel-content { flex: 1; min-height: 0; }
 
+.dock-resizer {
+  height: 6px; flex-shrink: 0; background: transparent; cursor: row-resize;
+  position: relative; z-index: 5; margin-top: -3px; margin-bottom: -3px;
+}
+.dock-resizer::after {
+  content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+  width: 36px; height: 3px; background: rgba(255,255,255,0.12); border-radius: 999px;
+  transition: background 0.2s, width 0.2s;
+}
+.dock-resizer:hover::after, .dock-resizer.dragging::after { background: rgba(251,191,36,0.55); width: 48px; }
+.dock-resizer.dragging { background: rgba(251,191,36,0.08); }
+
 .suggestion-dock {
   flex-shrink: 0;
   background: #0e0e0f;
   border-top: 1px solid #1f1f1f;
   display: flex; flex-direction: column;
-  max-height: 52%; min-height: 180px;
+  max-height: 62%; min-height: 220px;
   overflow: hidden;
+  transition: max-height 0.28s var(--ease), min-height 0.28s var(--ease);
 }
 .suggestion-dock.hidden { display: none; }
+.suggestion-dock.expanded { max-height: 78%; min-height: 340px; }
+.suggestion-dock.collapsed-dock { max-height: 42px; min-height: 42px; overflow: hidden; }
+.suggestion-dock.collapsed-dock .suggestion-body,
+.suggestion-dock.collapsed-dock .question-pills,
+.suggestion-dock.collapsed-dock .context-prompt-wrap,
+.suggestion-dock.collapsed-dock .context-inspector,
+.suggestion-dock.collapsed-dock .compress-status { display: none; }
 .dock-header {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 10px 6px; flex-shrink: 0;
   border-bottom: 1px solid rgba(255,255,255,0.06);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
+.dock-header-actions { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+.dock-expand-btn {
+  width: 28px; height: 28px; display: grid; place-items: center;
+  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text-2);
+  border-radius: 8px; cursor: pointer; font-size: 13px; transition: all 0.18s var(--ease); flex-shrink: 0;
+}
+.dock-expand-btn:hover { background: rgba(255,255,255,0.09); color: var(--text); border-color: var(--border-strong); }
+.suggestion-dock.expanded .dock-expand-btn { background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.3); color: #fbbf24; }
 .dock-title {
   display: flex; align-items: center; gap: 6px;
   font-size: 12px; font-weight: 700; color: #f1f5f9; white-space: nowrap;
@@ -648,9 +676,11 @@ body {
 .q-pill:hover:not(.active) { background: rgba(255,255,255,0.09); color: var(--text); }
 .suggestion-body {
   flex: 1; overflow-y: auto; padding: 8px 10px 10px;
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 10px;
+  scroll-behavior: smooth;
 }
 .suggest-empty { font-size: 12px; color: var(--text-3); text-align: center; padding: 18px; }
+.suggestion-dock.expanded .suggestion-body { padding: 10px 12px 12px; gap: 12px; }
 .dock-structure-list { display: flex; flex-direction: column; gap: 6px; }
 .dock-structure-item {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -668,10 +698,14 @@ body {
   background: #f59e0b; color: #000; border-radius: 4px; font-size: 10px;
 }
 .dock-complete-card {
-  background: #fff; color: #111; border-radius: 10px; padding: 10px 12px;
-  font-size: 13px; line-height: 1.5; position: relative;
-  display: flex; gap: 8px; align-items: flex-start;
+  background: #fff; color: #111; border-radius: 10px; padding: 12px 14px;
+  font-size: 13.5px; line-height: 1.6; position: relative;
+  display: flex; gap: 10px; align-items: flex-start;
+  box-shadow: 0 1px 6px rgba(0,0,0,0.08);
 }
+.suggestion-dock.expanded .dock-complete-card { padding: 14px 16px; font-size: 14px; line-height: 1.65; }
+.dock-complete-card .answer-text { flex: 1; min-width: 0; }
+.dock-complete-card .copy-btn { position: sticky; top: 4px; }
 .dock-complete-card .copy-btn {
   flex-shrink: 0; background: #111; color: #fff; border: none; border-radius: 6px;
   padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer;
@@ -689,14 +723,26 @@ body {
 #manualCompressBtn { border: 1px dashed rgba(251,191,36,0.25) !important; }
 #manualCompressBtn:hover { background: rgba(251,191,36,0.10) !important; color: #fbbf24 !important; }
 
-/* Context prompt for suggestion */
+/* Context prompt for suggestion — collapsible to save dock space */
 .context-prompt-wrap {
-  padding: 8px 10px 6px;
+  padding: 6px 10px;
   border-bottom: 1px solid rgba(255,255,255,0.06);
   background: rgba(251,191,36,0.04);
   display: flex; flex-direction: column; gap: 6px;
   flex-shrink: 0;
 }
+.context-prompt-wrap.collapsed { padding: 4px 10px; }
+.context-prompt-toggle {
+  width: 100%; display: flex; align-items: center; gap: 6px;
+  background: transparent; border: none; cursor: pointer;
+  font-size: 11px; font-weight: 700; color: #fbbf24; letter-spacing: 0.02em;
+  font-family: inherit; text-align: left; padding: 2px 0;
+}
+.context-prompt-toggle .cp-icon { font-size: 12px; }
+.context-prompt-toggle .cp-chevron { margin-left: auto; font-size: 10px; color: var(--text-3); transition: transform 0.2s var(--ease); }
+.context-prompt-wrap:not(.collapsed) .cp-chevron { transform: rotate(90deg); }
+.context-prompt-collapsible { display: flex; flex-direction: column; gap: 6px; }
+.context-prompt-wrap.collapsed .context-prompt-collapsible { display: none; }
 .context-prompt-label {
   display: flex; align-items: center; gap: 6px;
   font-size: 11px; font-weight: 700; color: #fbbf24; letter-spacing: 0.02em;
@@ -730,9 +776,37 @@ body {
 .context-clear-btn:active { transform: scale(0.95); }
 .context-prompt-hint { font-size: 10px; color: var(--text-3); line-height: 1.3; }
 
+/* Context Inspector */
+.context-inspector {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+  flex-shrink: 0;
+}
+.inspector-header {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; background: transparent; border: none; cursor: pointer;
+  font-family: inherit; text-align: left; transition: background 0.15s;
+}
+.inspector-header:hover { background: rgba(255,255,255,0.04); }
+.inspector-title { font-size: 11px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.02em; }
+.inspector-meta { flex: 1; font-size: 10px; color: var(--text-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.inspector-chevron { font-size: 11px; color: var(--text-3); transition: transform 0.2s var(--ease); }
+.inspector-header[aria-expanded="true"] .inspector-chevron { transform: rotate(90deg); }
+.inspector-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
+.inspector-tabs { display: flex; gap: 4px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 999px; padding: 2px; width: fit-content; }
+.inspector-tab { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: transparent; border: none; color: var(--text-3); cursor: pointer; font-family: inherit; }
+.inspector-tab.active { background: #fff; color: #0a0a0a; }
+.inspector-pane { font-size: 11.5px; line-height: 1.5; color: var(--text-2); background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 140px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); }
+.inspector-pane:empty::before { content: '(empty)'; color: var(--text-3); font-style: italic; }
+.inspector-actions { display: flex; align-items: center; gap: 8px; }
+.inspector-copy-btn { font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text-2); cursor: pointer; font-family: inherit; }
+.inspector-copy-btn:hover { background: rgba(255,255,255,0.10); color: var(--text); }
+.inspector-hint { font-size: 10px; color: var(--text-3); line-height: 1.3; }
+
 /* Small height */
 @media (max-height: 600px) {
   .placeholder-text { min-height: 80px; padding: 16px; }
   .panel-content { font-size: 13.5px; }
-  .suggestion-dock { min-height: 140px; max-height: 45%; }
+  .suggestion-dock { min-height: 160px; max-height: 50%; }
+  .suggestion-dock.expanded { max-height: 68%; }
 }

@@ -60,7 +60,7 @@ describe('createCompressService', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true, status: 200,
       headers: { get: () => null },
-      json: async () => ({ choices: [{ message: { content: '• bullet1\n• bullet2' } }] }),
+      json: async () => ({ choices: [{ message: { content: '- bullet covering decisions and names for QA context\n- second bullet with facts and topics preserved' } }] }),
       text: async () => '',
     }));
     // stub chrome storage
@@ -70,7 +70,7 @@ describe('createCompressService', () => {
     await svc.perform(true);
 
     expect(store.getState().lastCompressedIdx).toBe(3);
-    expect(store.getState().compressedSummary).toContain('bullet1');
+    expect(store.getState().compressedSummary).toContain('bullet');
     expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Compressed 3 sentences'), 'success');
     expect(updateCompressToggleUI).toHaveBeenCalled();
     expect(store.getState().compressInProgress).toBe(false);
@@ -88,7 +88,8 @@ describe('createCompressService', () => {
     global.chrome.storage.local.set = vi.fn().mockReturnValue(Promise.resolve());
     const svc = createCompressService(store, { showStatus: vi.fn(), showToast, updateCompressToggleUI: vi.fn() });
     await svc.perform(true);
-    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Compression returned empty'), 'error');
+    // empty -> fallback invalid -> outer catch shows Compression failed
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Compression failed'), 'error');
   });
 
   it('start/stop timer', () => {

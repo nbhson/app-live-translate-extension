@@ -1,6 +1,8 @@
 import { CONFIG } from '../../config.js';
 import { callProviderGeneric } from './provider.js';
 import { storageSet } from '../storage.js';
+import { createCompressionAgent } from '../../harness/agent/compression.agent.js';
+import { isValidCompressSummary } from '../../utils/buildCompressPrompt.js';
 
 export function createCompressService(store, deps) {
   const { showStatus, showToast, updateCompressToggleUI, isListening, activeAudioTrack } = deps;
@@ -25,10 +27,22 @@ export function createCompressService(store, deps) {
       // dedupe: if segment is mostly whitespace/punct, skip
       if (segment.trim().length < 10) return;
       store.setState({ compressInProgress: true });
-      showStatus('Compressing history…');
+      showStatus('Compressing history… (agent)');
       try {
-        const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${segment}"""`;
-        const summary = await callProviderGeneric(prompt, providerConfig, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
+        // Agent path (LLM + harness tools) — QA-aware compression, no loop needed for this task
+        let summary;
+        try {
+          const agent = createCompressionAgent({ store, llmHarness: null });
+          // use store-provided llm if available via harness, else direct provider with shared isValid
+          summary = await agent.run({ segment, pendingCount: pending, providerConfig });
+          if (!isValidCompressSummary(summary)) throw new Error('Agent returned invalid summary');
+        } catch (agentErr) {
+          console.warn('[compress agent fallback]', agentErr.message);
+          // Fallback to original single-shot prompt if agent fails — also validated
+          const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${segment}"""`;
+          summary = await callProviderGeneric(prompt, providerConfig, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
+          if (!isValidCompressSummary(summary)) throw new Error('Fallback summary invalid');
+        }
         const clean = String(summary || '').trim();
         if (!clean) {
           if (isManual) showToast('Compression returned empty', 'error');

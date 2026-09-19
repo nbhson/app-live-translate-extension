@@ -143,7 +143,8 @@
       </div>
     </section>
 
-    <!-- Suggestion Dock – separated like mockup [Image 1] -->
+    <div class="dock-resizer" id="dockResizer" role="separator" aria-label="Resize suggestions" title="Drag to resize — double click to expand"></div>
+    <!-- Suggestion Dock – separated like mockup [Image 1] — primary component, expandable -->
     <section class="suggestion-dock" id="suggestionDock" aria-label="Suggested Answers">
       <div class="dock-header">
         <div class="dock-title">
@@ -151,27 +152,55 @@
           <span>Suggested Answers</span>
           <span class="q-count" id="qCountBadge">0 questions</span>
         </div>
-        <div class="dock-tabs" role="tablist" aria-label="Suggestion mode">
-          <button class="dock-tab active" data-view="both" role="tab" aria-selected="true">Both</button>
-          <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Structure</button>
-          <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Full sentences</button>
-          <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Clear suggestions">Clear</button>
-          <button class="dock-tab ghost" id="manualCompressBtn" title="Compress pending history now">Compress now</button>
+        <div class="dock-header-actions">
+          <button class="dock-expand-btn" id="dockExpandBtn" title="Expand / collapse suggestions (double-click resizer)" aria-label="Expand suggestions">⛶</button>
+          <div class="dock-tabs" role="tablist" aria-label="Suggestion mode">
+            <button class="dock-tab active" data-view="both" role="tab" aria-selected="true">Both</button>
+            <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Structure</button>
+            <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Full</button>
+            <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Clear suggestions">Clear</button>
+            <button class="dock-tab ghost" id="manualCompressBtn" title="Compress pending history now">Compress now</button>
+          </div>
         </div>
       </div>
-      <!-- Context Prompt for suggestions (not used for summary) -->
-      <div class="context-prompt-wrap" id="contextPromptWrap">
-        <label for="contextPromptInput" class="context-prompt-label">
+      <!-- Context Prompt for suggestions (not used for summary) — collapsible to save space -->
+      <div class="context-prompt-wrap collapsed" id="contextPromptWrap">
+        <button type="button" class="context-prompt-toggle" id="contextPromptToggle" aria-expanded="false" aria-controls="contextPromptCollapsible">
           <span class="cp-icon">🎯</span> Suggestion Context
           <span class="context-prompt-badge" id="contextPromptBadge" style="display:none">Saved</span>
-        </label>
-        <div class="context-prompt-row">
-          <textarea id="contextPromptInput" class="context-prompt-input" rows="2" maxlength="600" placeholder="e.g. daily meeting with dev team • frontend interview call • product demo for client..."></textarea>
-          <button id="clearContextPromptBtn" class="context-clear-btn" title="Clear context" aria-label="Clear context">✕</button>
+          <span class="cp-chevron" aria-hidden="true">▸</span>
+        </button>
+        <div class="context-prompt-collapsible" id="contextPromptCollapsible" hidden>
+          <div class="context-prompt-row">
+            <textarea id="contextPromptInput" class="context-prompt-input" rows="2" maxlength="600" placeholder="e.g. daily meeting with dev team • frontend interview call • product demo for client..."></textarea>
+            <button id="clearContextPromptBtn" class="context-clear-btn" title="Clear context" aria-label="Clear context">✕</button>
+          </div>
+          <span class="context-prompt-hint">Used only for answer suggestions — does not affect AI summary</span>
         </div>
-        <span class="context-prompt-hint">Used only for answer suggestions — does not affect AI summary</span>
       </div>
       <div class="compress-status" id="compressStatus" style="display:none"></div>
+      <!-- Context Inspector — what AI actually sees (live vs compressed) -->
+      <div class="context-inspector" id="contextInspector" aria-label="Active context inspector">
+        <button class="inspector-header" id="inspectorToggle" type="button" aria-expanded="false" aria-controls="inspectorBody">
+          <span class="inspector-title">🧠 Active Context</span>
+          <span class="inspector-meta" id="inspectorMeta">0 utterances • live 0 ctx</span>
+          <span class="inspector-chevron" id="inspectorChevron" aria-hidden="true">▸</span>
+        </button>
+        <div class="inspector-body" id="inspectorBody" hidden>
+          <div class="inspector-tabs" role="tablist" aria-label="Context view">
+            <button class="inspector-tab active" data-tab="live" role="tab" aria-selected="true">Live (next Q)</button>
+            <button class="inspector-tab" data-tab="compressed" role="tab" aria-selected="false">History</button>
+            <button class="inspector-tab" data-tab="pending" role="tab" aria-selected="false">Questions</button>
+          </div>
+          <div class="inspector-pane active" id="paneLive" role="tabpanel"></div>
+          <div class="inspector-pane" id="paneCompressed" role="tabpanel" hidden></div>
+          <div class="inspector-pane" id="panePending" role="tabpanel" hidden></div>
+          <div class="inspector-actions">
+            <button id="copyContextBtn" class="inspector-copy-btn" title="Copy active pane">Copy</button>
+            <span class="inspector-hint">Live = what will be sent for next question • History = compressedSummary (6000 max) • Pending = not yet compressed</span>
+          </div>
+        </div>
+      </div>
       <div class="question-pills" id="questionPills" role="tablist" aria-label="Question list"></div>
       <div class="suggestion-body scrollable" id="suggestionBody">
         <div class="suggest-empty" id="suggestEmpty">No questions yet. When AI detects a question, suggestions will appear here.</div>
