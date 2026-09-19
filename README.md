@@ -1,6 +1,6 @@
 # Live Translate (EN → VI) — Chrome Side Panel Extension
 
-Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Hỗ trợ **Tab Audio** (`chrome.tabCapture`) và **Microphone**; dịch tự động qua **Google Translate free API**; gợi ý trả lời, nén lịch sử 5 phút và tóm tắt cuộc họp qua **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
+Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 5-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
 Version **1.0.1** · MV3 · MIT
 
@@ -8,7 +8,7 @@ Version **1.0.1** · MV3 · MIT
 
 ---
 
-## Tổng quan kiến trúc
+## Architecture Overview
 
 ```mermaid
 flowchart TB
@@ -24,9 +24,9 @@ flowchart TB
         end
     end
 
-    subgraph AudioFeed["Nguồn âm thanh"]
-        TAB["Tab đang phát audio<br/>googlevideo, meet, youtube..."]
-        MIC["Microphone người dùng"]
+    subgraph AudioFeed["Audio Source"]
+        TAB["Active tab audio<br/>googlevideo, meet, youtube..."]
+        MIC["User microphone"]
     end
 
     subgraph External["External APIs"]
@@ -42,27 +42,27 @@ flowchart TB
     SP -->|"fetch POST generateContent / chat/completions"| LLM
     UTILS <--> SP
     SRV <--> STORE <--> UTILS
-    SRV -.->|"future ESM entry (dist/main.js hiện chưa load)"| SP
+    SRV -.->|"future ESM entry (dist/main.js not loaded yet)"| SP
 ```
 
-> **Ghi chú quan trọng:** file chạy thực tế là **`sidepanel.js`** (không module, load trực tiếp trong `sidepanel.html`). Các module **`src/`** là bản tái cấu trúc tương đương, được Vitest test và Vite build thành `dist/main.js` — nhưng `sidepanel.html` **đang comment out** thẻ `<script type="module" src="dist/main.js">` nên `src/` hiện là code chết về runtime. Hai bản phải là ảnh phản chiếu (mirror). Các chỉnh sửa sau đây đều sync cả 2 nơi.
+> **Important note:** the actual runtime file is **`sidepanel.js`** (non-module, loaded directly in `sidepanel.html`). The **`src/`** modules are an equivalent refactored version, covered by Vitest and built by Vite into `dist/main.js` — but `sidepanel.html` **currently comments out** the `<script type="module" src="dist/main.js">` tag, so `src/` is dead code at runtime. Both must stay mirrored. All changes below are synced in both places.
 
 ---
 
 ## Features
 
 - **Realtime Transcription**: Web Speech API (`en-US`, `continuous` + `interimResults`), `SILENCE_THRESHOLD = 900ms`.
-- **Dịch EN→VI tự động**: Google Translate free API per-utterance, chunking `>4200 chars`, retry/backoff, LRU cache 500 entry.
-- **Tab Audio & Mic**: `chrome.tabCapture.getMediaStreamId` + loopback qua `AudioContext`, fallback sang mic nếu tab không capturable.
-- **Gợi ý trả lời AI**: `isQuestion()` phát hiện câu hỏi → `buildSuggestPrompt()` → LLM → `parseSuggestAnswers()` → Suggestion Dock (Cả 2 / Cấu trúc / Câu hoàn chỉnh).
-- **Rolling Compress 5 phút**: toggle `🗜️ Nén 5p` — nén lịch sử định kỳ 5 phút thành bullet summaries; prompt gợi ý sau đó dùng `compressed history + 10 câu gần nhất`.
-- **Tóm tắt AI**: `generateSummary()` hỗ trợ Gemini native (`:generateContent`) và OpenAI-compatible (`/chat/completions`).
-- **Speaker diarization heuristic**: VAD local (RMS + spectral centroid) để phân biệt 2 người nói.
-- **UI**: feed transcript đơn (EN trắng / VI vàng), layout ngược — *newest on top*, live block + typing indicator, suggestion dock tách rời.
+- **Auto EN→VI Translation**: Google Translate free API per utterance, `>4200 chars` chunking, retry/backoff, 500-entry LRU cache.
+- **Tab Audio & Mic**: `chrome.tabCapture.getMediaStreamId` + loopback via `AudioContext`, fallback to mic if tab is not capturable.
+- **AI Answer Suggestions**: `isQuestion()` detects questions → `buildSuggestPrompt()` → LLM → `parseSuggestAnswers()` → Suggestion Dock (Both / Structure / Complete).
+- **Rolling 5-Minute Compress**: `🗜️ Compress 5m` toggle — compresses history every 5 minutes into bullet summaries; follow-up prompts use `compressed history + 10 most recent sentences`.
+- **AI Summary**: `generateSummary()` supports native Gemini (`:generateContent`) and OpenAI-compatible (`/chat/completions`).
+- **Speaker diarization heuristic**: Local VAD (RMS + spectral centroid) to distinguish 2 speakers.
+- **UI**: Single transcript feed (EN white / VI yellow), reverse layout — *newest on top*, live block + typing indicator, detached suggestion dock.
 
 ---
 
-## Flow 1 — Khởi động & Capture (Tab Audio / Mic)
+## Flow 1 — Startup & Capture (Tab Audio / Mic)
 
 ```mermaid
 sequenceDiagram
@@ -73,14 +73,14 @@ sequenceDiagram
     participant TC as chrome.tabCapture
     participant SP as speakerMonitor (VAD)
 
-    U->>UI: Chọn "Tab Audio" + bấm Bắt đầu
+    U->>UI: Select "Tab Audio" + click Start
     UI->>BG: sendMessageAsync({type:'get-tab-stream-id'})
     BG->>BG: isCapturableTab(tab)
-    alt Tab không capturable (chrome://, about:, chrome.google.com, file:)
+    alt Tab not capturable (chrome://, about:, chrome.google.com, file:)
         BG-->>UI: { error }
         UI->>UI: audioSourceSelect='mic' + showToast
-        Note over UI: fallback sang Mic
-    else Hợp lệ
+        Note over UI: fallback to Mic
+    else Valid
         BG->>TC: getMediaStreamId({targetTabId})
         TC-->>BG: streamId
         BG-->>UI: { streamId }
@@ -90,18 +90,18 @@ sequenceDiagram
         UI->>SP: startListening()
     end
 
-    alt Nguồn = Microphone
-        U->>UI: Chọn Mic + Bắt đầu
+    alt Source = Microphone
+        U->>UI: Select Mic + Start
         UI->>UI: setupMicSpeakerMonitor() → getUserMedia(audio)
         UI->>SP: setupSpeakerMonitor(micStream)
         UI->>UI: recognition.start()
     end
 ```
 
-`isCapturableTab` (mirror trong `background.js:11` và `src/background/isCapturableTab.js`):
-- Chỉ cho `http:` / `https:`.
-- Chặn `chrome://`, `chrome-extension://`, `about:`, `edge://`, `file:`.
-- Chặn host `chrome.google.com`, `chromewebstore.google.com`, `accounts.google.com`.
+`isCapturableTab` (mirrored in `background.js:11` and `src/background/isCapturableTab.js`):
+- Only allows `http:` / `https:`.
+- Blocks `chrome://`, `chrome-extension://`, `about:`, `edge://`, `file:`.
+- Blocks hosts `chrome.google.com`, `chromewebstore.google.com`, `accounts.google.com`.
 
 ---
 
@@ -120,130 +120,130 @@ sequenceDiagram
     SR->>R: onresult (interim/final chunks)
     R->>P: parseRecognitionEvent(event)
     P->>R: { interimEn, finals }
-    Note over P: guard event.results · confidence dưới 0.25 bỏ ·<br/>skip punctuation-only · dedup finals<br/>interim capped 200 chars
-    R->>F: finalizeText(f) cho từng final
+    Note over P: guard event.results · drop confidence < 0.25 ·<br/>skip punctuation-only · dedup finals<br/>interim capped 200 chars
+    R->>F: finalizeText(f) for each final
     R->>L: interim: ensureLiveUtterance()
-    Note over L: tạo live slot (EN trống, VI '…') trên cùng feed
+    Note over L: create live slot (EN empty, VI '…') at top of feed
     R->>R: debounce: SILENCE_THRESHOLD=900ms
-    R->>F: forceFinalizeText(interim) nếu đạt<br/>MAX_INTERIM_LENGTH=80 hoặc hết silence
+    R->>F: forceFinalizeText(interim) if<br/>MAX_INTERIM_LENGTH=80 or silence ended
     F->>F: splitIntoUtterances → push EN + placeholder VI
-    V-->>F: currentSpeakerId (từ VAD) cho speaker badge
+    V-->>F: currentSpeakerId (from VAD) for speaker badge
 ```
 
-**Xử lý error / auto-restart** (`handleRecognitionError` / `handleRecognitionEnd`):
+**Error handling / auto-restart** (`handleRecognitionError` / `handleRecognitionEnd`):
 
-| Error | Xử lý |
+| Error | Handling |
 |---|---|
-| `not-allowed` / `service-not-allowed` | hiện Permission overlay + dừng |
-| `no-speech` / `aborted` | bỏ qua, auto-restart |
-| `audio-capture` | toast "Mic not found" + dừng |
-| `network` | toast "STT network error — retrying", giữ chạy |
-| khác | toast + dừng |
+| `not-allowed` / `service-not-allowed` | show Permission overlay + stop |
+| `no-speech` / `aborted` | ignore, auto-restart |
+| `audio-capture` | toast "Mic not found" + stop |
+| `network` | toast "STT network error — retrying", keep running |
+| other | toast + stop |
 
-`onend` → nếu vẫn đang listen: reset `lastFinalIndex=-1`, auto-restart sau **300ms**.
+`onend` → if still listening: reset `lastFinalIndex=-1`, auto-restart after **300ms**.
 
 ---
 
-## Flow 3 — Dịch EN→VI (Google Translate + chunk + retry + LRU)
+## Flow 3 — Translation EN→VI (Google Translate + chunk + retry + LRU)
 
 ```mermaid
 flowchart TD
     A["finalizeText(text)"] --> B{"Text > 4200 chars?"}
-    B -- "Có" --> C["chunkBySentence<br/>split theo (?&lt;=[.!?])\s+<br/>force-split phần &gt;4200"]
-    C --> D["Dịch từng chunk (đệ quy, cân nhắc abort)"]
+    B -- "Yes" --> C["chunkBySentence<br/>split by (?<=[.!?])\s+<br/>force-split parts >4200"]
+    C --> D["Translate each chunk (recursive, abort-aware)"]
     D --> E["Join ' '.join"]
-    B -- "Không" --> F{"Cache LRU hit?"}
+    B -- "No" --> F{"Cache LRU hit?"}
     E --> F
-    F -- "HIT" --> G["LRU touch → trả về ngay"]
+    F -- "HIT" --> G["LRU touch → return immediately"]
     F -- "MISS" --> H["fetch translate.googleapis.com<br/>sl=en&tl=vi&client=gtx"]
 
     H --> I{"response.ok?"}
     I -- "429/5xx" --> J{"attempt < retries (2)?"}
-    J -- "Có" --> K["backoff 400*2^attempt + jitter<br/>honor Retry-After header"]
+    J -- "Yes" --> K["backoff 400*2^attempt + jitter<br/>honor Retry-After header"]
     K --> H
-    J -- "Hết retry" --> L["throw / trả ''"]
-    I -- "OK" --> M{"json() trả text?"}
+    J -- "No retry left" --> L["throw / return ''"]
+    I -- "OK" --> M{"json() returned text?"}
     M -- "Empty (transcript)" --> N{"attempt<retries?"}
-    N -- "Có" --> O["delay 300*(attempt+1) → retry"]
-    N -- "Không" --> P["trả ''"]
-    M -- "Có text" --> Q["cache.set → return"]
+    N -- "Yes" --> O["delay 300*(attempt+1) → retry"]
+    N -- "No" --> P["return ''"]
+    M -- "Has text" --> Q["cache.set → return"]
 
     H -.->|"network error / Failed to fetch"| R{"retryable?"}
-    R -- "Có & attempt<retries" --> S["backoff 350*2^attempt → retry"]
-    R -- "không" --> T["trả ''"]
+    R -- "Yes & attempt<retries" --> S["backoff 350*2^attempt → retry"]
+    R -- "no" --> T["return ''"]
 
     Q --> U["translateBatchConcurrent (pool Max 3)<br/>setViText · copyVi.disabled · vi-just-arrived"]
 ```
 
-**Chi tiết mô-đun `src/services/translate/`:**
+**Module details `src/services/translate/`:**
 
-| File | Vai trò |
+| File | Role |
 |---|---|
-| `translate.js` | `translateText()` — chunking 4200, retry 2 lần (429/5xx/network/empty), timeout `TRANSLATE_TIMEOUT_MS=8500`, link external abort, `_internals` cho test |
-| `cache.js` | `createTranslateCache(limit=500)` — LRU thật, `safeLimit` clamp 1..2000, `get/set/has/delete/clear/size/keys` |
-| `batch.js` | `translateBatchConcurrent(tasks, {concurrency=3})` — worker pool, bỏ qua task đã có VI, `'[Translation failed]'` không đánh dấu là giá trị cuối, `results.failed` telemetry |
+| `translate.js` | `translateText()` — 4200 chunking, 2 retries (429/5xx/network/empty), timeout `TRANSLATE_TIMEOUT_MS=8500`, linked external abort, `_internals` for tests |
+| `cache.js` | `createTranslateCache(limit=500)` — real LRU, `safeLimit` clamped 1..2000, `get/set/has/delete/clear/size/keys` |
+| `batch.js` | `translateBatchConcurrent(tasks, {concurrency=3})` — worker pool, skips tasks that already have VI, `'[Translation failed]'` not marked as final value, `results.failed` telemetry |
 
-> (Bản `sidepanel.js:1419` giữ logic tương đương nội bộ — sync thủ công.)
+> (`sidepanel.js:1419` keeps equivalent inline logic — manual sync.)
 
 ---
 
-## Flow 4 — Phát hiện câu hỏi & Gợi ý trả lời AI
+## Flow 4 — Question Detection & AI Answer Suggestions
 
 ```mermaid
 flowchart TD
     A["finalizeText → utterance EN"] --> B["isQuestion(utterance)"]
-    B -- "Không phải câu hỏi" --> END["Bỏ qua (không gọi LLM)"]
-    B -- "Là câu hỏi" --> C["triggerSuggestForIndex(idx, question)"]
+    B -- "Not a question" --> END["Skip (no LLM call)"]
+    B -- "Is a question" --> C["triggerSuggestForIndex(idx, question)"]
 
-    C --> D{"suggestEnabled && provider cấu hình?"}
-    D -- "Chưa cấu hình" --> E["questionSuggestions[idx] = {state:'error'}"]
+    C --> D{"suggestEnabled && provider configured?"}
+    D -- "Not configured" --> E["questionSuggestions[idx] = {state:'error'}"]
 
-    D -- "OK" --> F["suggestQueue chỉ cho 1 LLM call<br/>đồng thời (queue serial)"]
+    D -- "OK" --> F["Parallel triggers<br/>(previously serial queue)"]
     F --> G["contextSlice:<br/>compress ON → slice(-COMPRESS_RECENT_KEEP)<br/>compress OFF → slice(-4)"]
 
     G --> H["buildSuggestPrompt(question, ctx)"]
-    H --> I["callProviderForSuggest(prompt)<br/>fetchWithRetry + fetchWithTimeout 30s<br/>Gemini :generateContent hoặc /chat/completions"]
+    H --> I["callProviderForSuggest(prompt)<br/>fetchWithRetry + fetchWithTimeout 30s<br/>Gemini :generateContent or /chat/completions"]
     I --> J["parseSuggestAnswers(raw)"]
-    J --> K{"answers/structures rỗng?"}
-    K -- "Có" --> L["synthesizeStructures(ans) fallback"]
-    K -- "Không" --> M["slice(0,3) structures + answers"]
+    J --> K{"answers/structures empty?"}
+    K -- "Yes" --> L["synthesizeStructures(ans) fallback"]
+    K -- "No" --> M["slice(0,3) structures + answers"]
     L --> M
-    M --> N["updateDock() + updateSuggestCard(idx)<br/>Suggestion Dock: pills + Cả 2/Cấu trúc/Câu hoàn chỉnh"]
+    M --> N["updateDock() + updateSuggestCard(idx)<br/>Suggestion Dock: pills + Both/Structure/Complete"]
     E --> N
 ```
 
-**`isQuestion()` — các lớp phát hiện** (`sidepanel.js:704-717`, `src/utils/isQuestion.js:1-8`):
+**`isQuestion()` — detection layers** (`sidepanel.js:704-717`, `src/utils/isQuestion.js:1-8`):
 
-0. **Normalize STT**: strip `s/n` prefix trước WH (`s How are you` → `How are you`), fix dính từ `youestion → you`.
-1. Nhanh: có `?` → true.
-2. `window.nlp` (compromise) nếu có → `doc.questions()`.
-3. Loại trừ cảm thán: `What a ...!`, `How great ...!`.
-4. **Comma-concat**: `How are you, Today I will...` → check left clause trước `,` nếu là WH/AUX thì true.
-5. **Declarative trap** `RE_DECLARATIVE_FALSE`: `This is correct.` không phải câu hỏi (trừ khi có tag/trailing `or`/embedded); tag không phẩy `right/ok/yeah` có guard tránh `are right` adjective.
-6. `RE_WH_START`: `who/what/when/where/why/how/which/...` + contraction `what's|how's|...` (≥2 từ, không kết thúc `!`).
-7. `RE_AUX_START`: đảo trợ động từ `is|are|do|does|did|can|could|will|would|have|...`.
-8. `RE_TAG_Q` (có phẩy): `, right?`, `, isn't it?`, `, okay?` + `RE_TAG_Q_NOCOMMA` (không phẩy): `right|ok|yeah|yep|huh` (≥3 từ, guard `are right`).
-9. `RE_EMBEDDED`: `do you|can you|would you mind|could you tell|how are you|...` (≥4 từ).
-10. `RE_INDIRECT`: `do you know|tell me|any chance|let me know|...` (≥3 từ).
-11. `RE_TRAILING_OR`: `or not|or what|or something|anything|somewhere` (≥4 từ).
+0. **STT Normalize**: strip `s/n` prefix before WH (`s How are you` → `How are you`), fix fused `youestion → you`.
+1. Fast: contains `?` → true.
+2. `window.nlp` (compromise) if available → `doc.questions()`.
+3. Exclude exclamations: `What a ...!`, `How great ...!`.
+4. **Comma-concat**: `How are you, Today I will...` → check left clause before `,` if WH/AUX then true.
+5. **Declarative trap** `RE_DECLARATIVE_FALSE`: `This is correct.` is not a question (unless tag/trailing `or`/embedded); no-comma tag `right/ok/yeah` has guard to avoid `are right` adjective.
+6. `RE_WH_START`: `who/what/when/where/why/how/which/...` + contractions `what's|how's|...` (≥2 words, not ending with `!`).
+7. `RE_AUX_START`: auxiliary inversion `is|are|do|does|did|can|could|will|would|have|...`.
+8. `RE_TAG_Q` (with comma): `, right?`, `, isn't it?`, `, okay?` + `RE_TAG_Q_NOCOMMA` (no comma): `right|ok|yeah|yep|huh` (≥3 words, `are right` guard).
+9. `RE_EMBEDDED`: `do you|can you|would you mind|could you tell|how are you|...` (≥4 words).
+10. `RE_INDIRECT`: `do you know|tell me|any chance|let me know|...` (≥3 words).
+11. `RE_TRAILING_OR`: `or not|or what|or something|anything|somewhere` (≥4 words).
 
-**`splitIntoUtterances()`** (`sidepanel.js:1232`, `src/utils/splitIntoUtterances.js:1-43`): `SENT_END_RE` + merge `ABBREVS` → iterative queue → `STRONG_SPLIT how/what/...` (prefix≥3) → `hows/whats` → `findQuestionDeclarativeSplit` Q→A (`what's your name`→`my name is Esther`) → comma-split → `isNoiseUtterance` lọc `S`/`h one...`→`one...`, normalize `e okay`/`youestion`.
+**`splitIntoUtterances()`** (`sidepanel.js:1232`, `src/utils/splitIntoUtterances.js:1-43`): `SENT_END_RE` + `ABBREVS` merge → iterative queue → `STRONG_SPLIT how/what/...` (prefix≥3) → `hows/whats` → `findQuestionDeclarativeSplit` Q→A (`what's your name`→`my name is Esther`) → comma-split → `isNoiseUtterance` filters `S`/`h one...`→`one...`, normalizes `e okay`/`youestion`.
 
-**`triggerSuggestForIndex` song song**: bỏ `suggestQueue` serial, mỗi `isQuestion` set `loading` rồi `callProviderForSuggest` song song; `updateDock` auto-scroll pills bar (`scrollLeft=scrollWidth` + `scrollIntoView` active).
+**`triggerSuggestForIndex` in parallel**: removed serial `suggestQueue`, each `isQuestion` sets `loading` then calls `callProviderForSuggest` in parallel; `updateDock` auto-scrolls pills bar (`scrollLeft=scrollWidth` + `scrollIntoView` active).
 
-**`buildSuggestPrompt()`** — chống injection: `sanitizePromptContext` thay `"""` → `"'"` trước khi nhúng vào block prompt; `truncateForPrompt` giới hạn recent ctx (1500 chars nén / 1000 chars thường).
+**`buildSuggestPrompt()`** — injection protection: `sanitizePromptContext` replaces `"""` → `"'"` before embedding in prompt block; `truncateForPrompt` caps recent context (1500 chars compressed / 1000 chars normal).
 
 **Provider** (`src/services/llm/provider.js`):
-- `fetchWithTimeout(url, opts, timeout)` — internal AbortController link external `signal`.
-- `fetchWithRetry(url, opts, timeout, maxRetries=2)` — retry 429/500/502/503/504 + `Retry-After`, drain body.
-- `callProviderForSuggest` — systemPrompt bắt buộc "ONLY JSON" (OpenAI-compatible), Gemini dùng `temperature 0.8, maxOutputTokens 512`.
-- `callProviderGeneric(prompt, cfg, {temperature=0.4, maxTokens=512, systemPrompt, timeout=25000})` — dùng cho compress.
+- `fetchWithTimeout(url, opts, timeout)` — internal AbortController linked to external `signal`.
+- `fetchWithRetry(url, opts, timeout, maxRetries=2)` — retry on 429/500/502/503/504 + `Retry-After`, drains body.
+- `callProviderForSuggest` — mandatory "ONLY JSON" systemPrompt (OpenAI-compatible), Gemini uses `temperature 0.8, maxOutputTokens 512`.
+- `callProviderGeneric(prompt, cfg, {temperature=0.4, maxTokens=512, systemPrompt, timeout=25000})` — used for compression.
 
-**`parseSuggestAnswers()`** — strip code fence json wrapper (cả khối `` ```json ... ``` ``), `tryParseJson` (xoá trailing comma), nhận `{structures,answers}` hoặc mảng đơn, fallback bullet lines (≥3 ký tự), giới hạn 5.
+**`parseSuggestAnswers()`** — strips JSON code fence wrapper (including `` ```json ... ``` `` blocks), `tryParseJson` (removes trailing commas), accepts `{structures,answers}` or single array, fallback to bullet lines (≥3 chars), limit 5.
 
 ---
 
-## Flow 5 — Rolling Compress 5 phút (context-aware suggestions)
+## Flow 5 — Rolling 5-Minute Compress (context-aware suggestions)
 
 ```mermaid
 sequenceDiagram
@@ -252,47 +252,47 @@ sequenceDiagram
     participant UI as sidepanel.js
     participant ST as storage.local
 
-    U->>UI: Bật toggle "🗜️ Nén 5p"
+    U->>UI: Enable "🗜️ Compress 5m" toggle
     UI->>UI: loadCompressPref() → compressEnabled=true
-    alt đang listen
-        UI->>UI: startCompressTimer() → setInterval 5 phút
+    alt currently listening
+        UI->>UI: startCompressTimer() → setInterval 5 minutes
     end
 
-    loop Mỗi 5 phút (hoặc nút "Nén ngay")
+    loop Every 5 minutes (or "Compress now" button)
         UI->>UI: performCompression(isManual)
-        Note over UI: guard: compressInProgress ·<br/>pendingCount >= 2 · segment không rỗng
+        Note over UI: guard: compressInProgress ·<br/>pendingCount >= 2 · non-empty segment
         UI->>UI: segment = finalizedEnPhrases.slice(lastCompressedIdx)
-        Note over UI: cap 8000 chars (giữ phần mới nhất)
+        Note over UI: cap 8000 chars (keep newest)
         UI->>LLM: callProviderGeneric(prompt, {temperature:0.3, maxTokens:300})<br/>"Summarize this conversation segment... 3-5 bullets, max 150 words"
         LLM-->>UI: summary
-        UI->>UI: compressedSummary += "[+N unit @ HH:MM:SS]\n" + clean<br/>cap 6000 chars cuối · lastCompressedIdx = len(finalized)
-        UI->>ST: storageSet({compressedSummary, lastCompressedIdx})<br/>(truncate string >8000 trong storageSet)
-        UI-->>U: toast "Compressed N sentences" / badge "Đã nén X câu"
+        UI->>UI: compressedSummary += "[+N unit @ HH:MM:SS]\n" + clean<br/>keep last 6000 chars · lastCompressedIdx = len(finalized)
+        UI->>ST: storageSet({compressedSummary, lastCompressedIdx})<br/>(truncate string >8000 in storageSet)
+        UI-->>U: toast "Compressed N sentences" / badge "Compressed X sentences"
     end
 
-    Note over UI: Prompt gợi ý khi compress ON:<br/>Compressed history (3000 chars) + Recent 10 utterances + Question
+    Note over UI: Prompt when compress ON:<br/>Compressed history (3000 chars) + Recent 10 utterances + Question
 ```
 
-**Khi compress bật**, `triggerSuggestForIndex` lấy `contextSlice = finalizedEnPhrases.slice(max(0, idx-COMPRESS_RECENT_KEEP+1), idx+1)` (10 câu) thay vì 4.
+When compression is on, `triggerSuggestForIndex` takes `contextSlice = finalizedEnPhrases.slice(max(0, idx-COMPRESS_RECENT_KEEP+1), idx+1)` (10 sentences) instead of 4.
 
 ---
 
-## Flow 6 — Tóm tắt AI (Summary)
+## Flow 6 — AI Summary
 
-> Không thay đổi theo spec — `generateSummary` / `parseMarkdown` / `parseInlineMarkdown` giữ nguyên.
+> Unchanged per spec — `generateSummary` / `parseMarkdown` / `parseInlineMarkdown` remain as-is.
 
 ```mermaid
 flowchart TD
-    A["Bấm Tóm tắt AI"] --> B["getFullEnglishText()<br/>join tất cả finalizedEnPhrases"]
-    B --> C{"Có nội dung?"}
-    C -- "Không" --> ER["alert('No meeting content...')"]
-    C -- "Có" --> D{"provider đủ config?"}
-    D -- "Thiếu" --> ER2["mở settings + alert"]
-    D -- "OK" --> E["Đọc lang (vi/en) + detail (bullets/short/action)"]
+    A["Click AI Summary"] --> B["getFullEnglishText()<br/>join all finalizedEnPhrases"]
+    B --> C{"Has content?"}
+    C -- "No" --> ER["alert('No meeting content...')"]
+    C -- "Yes" --> D{"provider configured?"}
+    D -- "Missing" --> ER2["open settings + alert"]
+    D -- "OK" --> E["Read lang (vi/en) + detail (bullets/short/action)"]
 
     E --> F{"lang == 'vi'?"}
-    F -- "vi" --> G["Prompt tiếng Việt: bullets/2-3 đoạn/Action Items"]
-    F -- "en" --> H["Prompt tiếng Anh tuỳ detail"]
+    F -- "vi" --> G["Vietnamese prompt: bullets/2-3 paragraphs/Action Items"]
+    F -- "en" --> H["English prompt by detail"]
 
     G --> I{"isGemini(baseUrl)?"}
     H --> I
@@ -301,16 +301,16 @@ flowchart TD
 
     J --> L["candidates[0].content.parts[0].text"]
     K --> L["choices[0].message.content<br/>(fallback message.content / choices[0].text)"]
-    L --> M{"Có text?"}
-    M -- "Không" --> ER3["throw 'API returned no content'"]
-    M -- "Có" --> N["parseMarkdown(candidateText)"]
-    N --> O["summaryMarkdown.innerHTML = rendered<br/>datastore rawText để copy"]
+    L --> M{"Has text?"}
+    M -- "No" --> ER3["throw 'API returned no content'"]
+    M -- "Yes" --> N["parseMarkdown(candidateText)"]
+    N --> O["summaryMarkdown.innerHTML = rendered<br/>store rawText for copy"]
     O --> P["toast 'Summarized with {model} successfully'"]
 
     N --> Q["parseInlineMarkdown — bold, headers, links, list"]
 ```
 
-`parseMarkdown` xử lý: `###`/`##` headers → `<h3>`/`<h4>`, `**bold**`, `- bullets`, `\`code\``, URLs → `<a target=_blank>`.
+`parseMarkdown` handles: `###`/`##` headers → `<h3>`/`<h4>`, `**bold**`, `- bullets`, `` `code` ``, URLs → `<a target=_blank>`.
 
 ---
 
@@ -318,27 +318,27 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["setupSpeakerMonitor(stream)"] --> B["guard: duplicate stream bỏ qua<br/>AudioContext resume"]
+    A["setupSpeakerMonitor(stream)"] --> B["guard: duplicate stream skip<br/>AudioContext resume"]
     B --> C["createMediaStreamSource + AnalyserNode<br/>fftSize=1024"]
     C --> D["setInterval tick 120ms"]
 
     D --> E["getByteTimeDomainData → RMS<br/>getByteFrequencyData → spectral centroid"]
     E --> F{"document.hidden?"}
-    F -- "hidden" --> G["tạm dừng (clearInterval) để tiết CPU"]
+    F -- "hidden" --> G["pause (clearInterval) to save CPU"]
     F -- "visible" --> H{"rms > SPEAKER_VAD_RMS_THRESH && not noise?"}
-    H -- "Noise: centroid>6500 && rms<0.08" --> I["xem là silence"]
+    H -- "Noise: centroid>6500 && rms<0.08" --> I["treat as silence"]
     H -- "Speech" --> J{"state==silence?"}
-    J -- "Có" --> K["pauseLen >= SPEAKER_MIN_PAUSE_MS(350)?<br/>+ có lastSpeakerFeatures?"]
-    K -- "Có" --> L{"shouldToggleSpeaker?<br/>so sánh |RMS diff| + |centroid diff| >= 320<br/>debounce 900ms"}
-    L -- "Có" --> M["currentSpeakerId = (id+1)%2<br/>maybeCutLiveOnSpeakerChange()"]
-    K -- "không" --> N["lastSpeakerFeatures = {rms,centroid}"]
-    J -- "không" --> O["EMA alpha=0.15 làm mượt features"]
+    J -- "Yes" --> K["pauseLen >= SPEAKER_MIN_PAUSE_MS(350)?<br/>+ has lastSpeakerFeatures?"]
+    K -- "Yes" --> L{"shouldToggleSpeaker?<br/>compare |RMS diff| + |centroid diff| >= 320<br/>debounce 900ms"}
+    L -- "Yes" --> M["currentSpeakerId = (id+1)%2<br/>maybeCutLiveOnSpeakerChange()"]
+    K -- "no" --> N["lastSpeakerFeatures = {rms,centroid}"]
+    J -- "no" --> O["EMA alpha=0.15 smooth features"]
     M --> P["speakerVadSilenceMs = 0"]
     O --> P
 
-    H -- "Silence" --> Q["state==speech và speechDur<600ms<br/>(SPEAKER_MIN_SPEECH_MS)?"]
-    Q -- "giữ speech (debounce click)" --> R["không chuyển state"]
-    Q -- "hết" --> S["state='silence' · speakerVadSilenceMs += dt"]
+    H -- "Silence" --> Q["state==speech and speechDur<600ms<br/>(SPEAKER_MIN_SPEECH_MS)?"]
+    Q -- "keep speech (debounce click)" --> R["don't switch state"]
+    Q -- "done" --> S["state='silence' · speakerVadSilenceMs += dt"]
 ```
 
 ---
@@ -354,39 +354,39 @@ sequenceDiagram
     participant T as autoScroll
 
     F->>F: splitIntoUtterances()
-    F->>U: appendUtterance(idx) cho từng utterance mới
+    F->>U: appendUtterance(idx) for each new utterance
     U->>U: buildUtteranceDom — EN span + VI span + copy buttons
     U->>D: prepend (DOM order = visual order, newest first)
-    U->>U: applySpeakerToDom(cache, speakerId) — badge màu
-    U->>D: pruneOldUtterances nếu > MAX_DOM_UTTERANCES(120)
+    U->>U: applySpeakerToDom(cache, speakerId) — colored badge
+    U->>D: pruneOldUtterances if > MAX_DOM_UTTERANCES(120)
 
-    Note over U: live block: finalizeText trong live → promoteLiveToFinal<br/>(in-place, không jump) · typing indicator
-    F->>T: autoScroll(true) — force scroll top
-    T->>D: channel: autoScroll checkbox ON<br/>stick khi isNearTop() (scrollTop dưới 120)<br/>scrollTo({top:0, behavior})
+    Note over U: live block: finalizeText inside live → promoteLiveToFinal<br/>(in-place, no jump) · typing indicator
+    F->>T: autoScroll(true) — force scroll to top
+    T->>D: channel: autoScroll checkbox ON<br/>stick when isNearTop() (scrollTop < 120)<br/>scrollTo({top:0, behavior})
 ```
 
-**Chống XSS:** mọi nội dung người dùng/LLM đi qua `escapeHtml()` (`& < > " ' \``). `DOMPurify` có trong `package.json` và được import trong `src/main.js` (module mới), chưa được dùng trong `sidepanel.js` runtime.
+**XSS protection:** all user/LLM content goes through `escapeHtml()` (`& < > " ' \``). `DOMPurify` is in `package.json` and imported in `src/main.js` (new module), not yet used in `sidepanel.js` runtime.
 
 ---
 
-## Cấu hình CONFIG (`src/config.js` ↔ `sidepanel.js` — mirror)
+## CONFIG (`src/config.js` ↔ `sidepanel.js` — mirror)
 
-| Hằng số | Giá trị | Ý nghĩa |
+| Constant | Value | Meaning |
 |---|---|---|
-| `SILENCE_THRESHOLD` | 900 ms | buộc finalize interim sau khi im lặng |
-| `MAX_INTERIM_LENGTH` | 80 | finalize sớm nếu interim đạt 80 ký tự |
-| `MAX_DOM_UTTERANCES` | 120 | prune DOM cũ khi vượt ngưỡng |
-| `INTERIM_DEBOUNCE_MS` | 420 | debounce dịch interim (đã giảm từ 500) |
-| `TRANSLATION_CACHE_MAX` | 500 | LRU size translate cache |
-| `MAX_CONCURRENT_TRANSLATE` | 3 | pool dịch song song |
-| `COMPRESS_INTERVAL_MS` | 5 phút | tần suất auto-compress |
-| `COMPRESS_RECENT_KEEP` | 10 | số utterance gần nhất trong prompt nén |
-| `COMPRESS_MAX_CHARS` | 3000 | cap compressedSummary khi build prompt |
-| `SPEAKER_VAD_RMS_THRESH` | 0.012 | ngưỡng RMS xem là "có tiếng nói" |
-| `SPEAKER_MIN_PAUSE_MS` | 350 | pause tối thiểu để tính speaker switch |
-| `SPEAKER_MIN_SPEECH_MS` | 600 | speech tối thiểu trước khi chuyển silence |
-| `SPEAKER_CENTROID_DIFF` | 320 | sai khác centroid tối thiểu để đổi speaker |
-| `TRANSLATE_TIMEOUT_MS` | 8500 | timeout mỗi request dịch (đã tăng từ 8000) |
+| `SILENCE_THRESHOLD` | 900 ms | force-finalize interim after silence |
+| `MAX_INTERIM_LENGTH` | 80 | early finalize if interim reaches 80 chars |
+| `MAX_DOM_UTTERANCES` | 120 | prune old DOM when exceeding threshold |
+| `INTERIM_DEBOUNCE_MS` | 420 | debounce interim translation (reduced from 500) |
+| `TRANSLATION_CACHE_MAX` | 500 | LRU translation cache size |
+| `MAX_CONCURRENT_TRANSLATE` | 3 | concurrent translation pool |
+| `COMPRESS_INTERVAL_MS` | 5 min | auto-compress frequency |
+| `COMPRESS_RECENT_KEEP` | 10 | recent utterances kept in compressed prompt |
+| `COMPRESS_MAX_CHARS` | 3000 | cap for compressedSummary when building prompt |
+| `SPEAKER_VAD_RMS_THRESH` | 0.012 | RMS threshold considered "speech" |
+| `SPEAKER_MIN_PAUSE_MS` | 350 | minimum pause to consider speaker switch |
+| `SPEAKER_MIN_SPEECH_MS` | 600 | minimum speech duration before switching to silence |
+| `SPEAKER_CENTROID_DIFF` | 320 | minimum centroid diff to switch speaker |
+| `TRANSLATE_TIMEOUT_MS` | 8500 | per-request translation timeout (increased from 8000) |
 
 ---
 
@@ -398,27 +398,27 @@ sequenceDiagram
    git clone https://github.com/nbhson/app-live-translate-extension.git
    ```
 
-2. Mở `chrome://extensions` → bật **Developer mode** → **Load unpacked** → chọn thư mục repo.
-3. Click icon extension để mở Side Panel. Cấu hình AI Provider lần đầu trong `⚙️`.
+2. Open `chrome://extensions` → enable **Developer mode** → **Load unpacked** → select the repo folder.
+3. Click the extension icon to open the Side Panel. Configure the AI Provider on first run via `⚙️`.
 
-## Cấu hình AI Provider
+## AI Provider Configuration
 
 - **Base URL**: `https://generativelanguage.googleapis.com/v1beta` (Gemini) / `https://api.openai.com/v1` / `http://localhost:11434/v1` (Ollama) / `https://api.groq.com/openai/v1`.
-- **API Key**: `AIza...` / `sk-...` (để trống nếu localhost).
+- **API Key**: `AIza...` / `sk-...` (leave empty for localhost).
 - **Model**: `gemini-2.5-flash`, `gpt-4o-mini`, `llama3.1`, ...
-- Lưu vào `chrome.storage.local` (`providerBaseUrl`, `providerApiKey`, `providerModel`). Preset chips 1-click. `isValidProviderConfig()` kiểm tra `http/https` + model non-empty.
+- Stored in `chrome.storage.local` (`providerBaseUrl`, `providerApiKey`, `providerModel`). 1-click preset chips. `isValidProviderConfig()` checks `http/https` + non-empty model.
 
 ## Usage
 
-1. Chọn nguồn (Tab Audio / Microphone) → **Bắt đầu** (hoặc Space).
-2. Nói tiếng Anh → transcript EN/VI realtime. Câu hỏi được highlight `?` + tự sinh gợi ý trong dock.
-3. Bật `🗜️ Nén 5p` cho video dài (>15 phút) để gợi ý bám sát toàn bộ lịch sử.
-4. Tab **Tóm tắt AI** → chọn `VI/EN` + `Chi tiết/Ngắn/Actions` → **Tóm tắt** → Copy.
+1. Select source (Tab Audio / Microphone) → **Start** (or Space).
+2. Speak English → realtime EN/VI transcript. Questions are highlighted with `?` and auto-generate suggestions in the dock.
+3. Enable `🗜️ Compress 5m` for long sessions (>15 min) so suggestions stay grounded in full history.
+4. **AI Summary** tab → choose `VI/EN` + `Detailed/Short/Actions` → **Summarize** → Copy.
 
-### Phím tắt
+### Shortcuts
 
-- **Space** — Start/Stop (xem `setupKeyboardShortcuts`, `sidepanel.js:2396`).
-- Nút copy trên mỗi viên gạch transcript / card gợi ý.
+- **Space** — Start/Stop (see `setupKeyboardShortcuts`, `sidepanel.js:2396`).
+- Copy button on each transcript tile / suggestion card.
 
 ## Permissions
 
@@ -426,7 +426,7 @@ sequenceDiagram
 permissions:        sidePanel, activeTab, storage, tabCapture
 host_permissions:   https://translate.googleapis.com/*, generativelanguage.googleapis.com/*,
                     api.openai.com/*, api.groq.com/*, http://localhost/*, http://127.0.0.1/*
-optional_host:      https://*/*            (thêm nếu cần url tuỳ ý → validate bằng isValidUrl)
+optional_host:      https://*/*            (add if custom URL needed → validated via isValidUrl)
 ```
 
 ## Development
@@ -439,13 +439,13 @@ npm run build          # vite build → dist/main.js (43.6 kB, gzip 14.7 kB)
 node --check sidepanel.js   # syntax check runtime script
 ```
 
-**Checklist khi sửa code:**
-1. Giữ mi **mirror** `sidepanel.js` ↔ `src/` (cùng hành vi). Nếu sửa gì trong `src/`, sửa tương ứng `sidepanel.js`.
-2. `npm test` không được fail.
+**Checklist when editing code:**
+1. Keep the **mirror** `sidepanel.js` ↔ `src/` (same behavior). If you change anything in `src/`, mirror it in `sidepanel.js`.
+2. `npm test` must not fail.
 3. `node --check sidepanel.js && npm run build`.
-4. Reload extension: `chrome://extensions` → Reload → thử cả Tab Audio và Mic.
+4. Reload extension: `chrome://extensions` → Reload → test both Tab Audio and Mic.
 
-### Viết test
+### Writing tests
 
 ```
 tests/
@@ -453,56 +453,56 @@ tests/
   isQuestion.test.js              — 14 cases (?, WH-start, aux, tag, embedded, indirect, exclamation, declarative trap, STT noise s/n+youestion, no-comma tag, comma-concat)
   splitIntoUtterances.test.js     — 12 cases (empty, punctuation, WH keep, mid-split how, abbrev merge Mr./Dr., Safari fallback, STT normalize, comma-concat, no-punct concat)
   parseSuggestAnswers.test.js     — object/array/bullet fallback, limit 5, synthesizeStructures, code fence
-  sanitizePromptContext.test.js   — trim/slice, null-safe, triple-quote escape (khớp cài đặt mới)
+  sanitizePromptContext.test.js   — trim/slice, null-safe, triple-quote escape (matches new fix)
   isCapturableTab.test.js         — schemes, chrome://, about:, blocked hosts
   computeSpectralCentroid.test.js — edge & branch
   shouldToggleSpeaker.test.js     — rms/centroid diff, debounce window
   escapeHtml.test.js              — entities
 ```
 
-> **On test:** `src/services/*` hiện có 0% coverage (không tệp test). `src/utils` ~94–100%.
+> **On tests:** `src/services/*` currently has 0% coverage (no test files). `src/utils` ~94–100%.
 
 ## File map
 
-| File | Vai trò | Ghi chú |
+| File | Role | Notes |
 |---|---|---|
-| `sidepanel.js` | Runtime chính (side panel logic + UI) | ~2457 dòng; mirror các module `src/` |
-| `sidepanel.html` / `sidepanel.css` | Layout & style | `dist/main.js` script đang comment out |
-| `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | mirror `src/background/isCapturableTab.js` |
+| `sidepanel.js` | Main runtime (side panel logic + UI) | ~2457 lines; mirrors `src/` modules |
+| `sidepanel.html` / `sidepanel.css` | Layout & style | `dist/main.js` script currently commented out |
+| `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | mirrors `src/background/isCapturableTab.js` |
 | `manifest.json` | MV3 manifest, permissions, icons | |
-| `permission.html` / `permission.js` | Overlay xin quyền mic/capture | |
-| `src/…` | Modular duplicates (testable, build target) | chưa load runtime |
+| `permission.html` / `permission.js` | Mic/capture permission overlay | |
+| `src/…` | Modular duplicates (testable, build target) | not loaded at runtime |
 | `tests/` | Vitest suites | 61 tests |
-| `lib/compromise.min.js` | NLP optional cho isQuestion | nếu load, tăng accuracy |
+| `lib/compromise.min.js` | Optional NLP for isQuestion | improves accuracy if loaded |
 
 ## Changelog
 
-- **2026-09-19c**: Fix merge fragment + lọc gợi ý cấu trúc lẫn câu hoàn chỉnh:
-  - `isQuestion`: guard fragment dở `…to/for/with` (chờ chunk sau), strip generic single-char noise `o success → success`, mở rộng strip prefix cho `okay/right/how's/what's`.
-  - `parseSuggestAnswers` (`sidepanel.js:1042`, `src/utils/parseSuggestAnswers.js:1`): lọc `answers` dạng cấu trúc (`" + "` + <12 từ), giữ `structures` riêng — không copy `structures → answers`.
-  - `triggerSuggestForIndex` / `renderDockBody` (`sidepanel.js:1098`): validate câu hoàn chỉnh ≥60 chars & ≥15 words; nếu chỉ có structures thì dock chỉ hiện Structures, không fake Complete answers.
-  - `finalizeText` (`sidepanel.js:1396`): merge 2 final liên tiếp khi prev dở (`to/for/...`) + cur là tag ngắn (`success/yeah/right`) → `how to push yourself to` + `o success yeah` → `how to push yourself to success yeah` (pop utterance cũ, re-index `questionSuggestions`).
-- **2026-09-19b**: Fix ảnh 2: `h one sentence okay ?` + song song gợi ý:
-  - `splitIntoUtterances`: thêm strip `h one...`→`one...` (single-consonant noise), iterative Q→A đệ quy fix `I'm doing well|what's your name|my name is Esther|how old are you|I'm 33...`.
-  - `triggerSuggestForIndex`: bỏ queue tuần tự → song song, display hết loading ngay; `updateDock` auto-scroll phải.
-  - `isNoiseUtterance`: `S S`/`S` lọc.
-- **2026-09-19**: Fix display concat & suggestion từ ảnh #1:
-  - `isQuestion`: giữ nguyên 2026-09-18.
-  - `splitIntoUtterances`: iterative queue, `findQuestionDeclarativeSplit` (Q→A `i'm/my name...`), normalize `e`+`okay` và `youestion`, `isNoiseUtterance` lọc `S`/`S S`, strip `,`, đệ quy split nhiều Q+A (`where are you from|I'm from the US|where were you born|I was born...`).
-- **2026-09-18**: Đại cải thiện toàn diện (trừ Summary per spec):
-  - Dịch: chunking 4200, retry backoff + `Retry-After`, LRU cache chuẩn (`cache.js`), worker pool abort-aware (`batch.js`).
-  - `isQuestion`: normalize `s/n`+`youestion`, comma-concat left-clause, `RE_TAG_Q_NOCOMMA` guard `are right`, embedded `how are you`, contractions, tag words, `RE_DECLARATIVE_FALSE` trap.
+- **2026-09-19c**: Fix fragment merge + filter structure vs complete answer mixing:
+  - `isQuestion`: guard incomplete fragment `…to/for/with` (wait for next chunk), strip generic single-char noise `o success → success`, expanded single-char prefix strip for `okay/right/how's/what's`.
+  - `parseSuggestAnswers` (`sidepanel.js:1042`, `src/utils/parseSuggestAnswers.js:1`): filter `answers` that look like structures (`" + "` + <12 words), keep `structures` separate — don't copy `structures → answers`.
+  - `triggerSuggestForIndex` / `renderDockBody` (`sidepanel.js:1098`): validate complete answers ≥60 chars & ≥15 words; if only structures exist, dock shows only Structures instead of fake Complete answers.
+  - `finalizeText` (`sidepanel.js:1396`): merge two consecutive finals when previous ends incomplete (`to/for/...`) + current is short tag (`success/yeah/right`) → `how to push yourself to` + `o success yeah` → `how to push yourself to success yeah` (pop old utterance, re-index `questionSuggestions`).
+- **2026-09-19b**: Fix screenshot 2: `h one sentence okay ?` + parallel suggestions:
+  - `splitIntoUtterances`: added `h one...`→`one...` strip (single-consonant noise), recursive iterative Q→A fix for `I'm doing well|what's your name|my name is Esther|how old are you|I'm 33...`.
+  - `triggerSuggestForIndex`: removed serial queue → parallel, render all loading immediately; `updateDock` auto-scrolls right.
+  - `isNoiseUtterance`: filter `S S`/`S`.
+- **2026-09-19**: Fix display concat & suggestions from screenshot #1:
+  - `isQuestion`: unchanged from 2026-09-18.
+  - `splitIntoUtterances`: iterative queue, `findQuestionDeclarativeSplit` (Q→A `i'm/my name...`), normalize `e`+`okay` and `youestion`, `isNoiseUtterance` filter `S`/`S S`, strip `,`, recursive multi Q+A split (`where are you from|I'm from the US|where were you born|I was born...`).
+- **2026-09-18**: Comprehensive overhaul (except Summary per spec):
+  - Translation: 4200 chunking, retry backoff + `Retry-After`, proper LRU (`cache.js`), abort-aware worker pool (`batch.js`).
+  - `isQuestion`: normalize `s/n`+`youestion`, comma-concat left-clause, `RE_TAG_Q_NOCOMMA` guard for `are right`, embedded `how are you`, contractions, tag words, `RE_DECLARATIVE_FALSE` trap.
   - `splitIntoUtterances`: normalize, `who/which`, abbrev merge, `\b` boundary, earliest split, STT contraction fallback, comma-concat + no-punct `How are you Today...`.
   - `parseSuggestAnswers`: code fence, trailing comma, min length.
   - `sanitizePromptContext`: fix `"""` injection → `"'"`, control chars.
   - Provider: `fetchWithTimeout` + `fetchWithRetry` (429/5xx/Retry-After), empty-response throw, validation.
-  - Compress: segment cap 8000, toast lỗi, re-read state after await.
+  - Compress: segment cap 8000, error toast, re-read state after await.
   - STT/VAD: confidence<0.25 filter, punctuation-only skip, dedup finals, interim cap 200, error taxonomy, auto-restart 300ms, noise filter, `document.hidden` pause, EMA, min-speech debounce.
   - Storage: `lastError`-aware, size-cap 8000, `isValidProviderConfig`.
   - Config: `INTERIM_DEBOUNCE_MS 500→420`, `TRANSLATE_TIMEOUT_MS 8000→8500`.
   - Background: block `chrome://`, `about:`, `file:`, `chromewebstore.google.com`, `accounts.google.com`.
-- **2026-09-17**: Thêm Rolling Compress 5 phút + toggle (B), generic LLM call, `compressedSummary` persistence, manual compress.
-- **Trước đó**: speaker VAD diarization, sticky live block, mockup transcript, suggestion dock.
+- **2026-09-17**: Added Rolling 5-minute Compress + toggle (B), generic LLM call, `compressedSummary` persistence, manual compress.
+- **Before**: speaker VAD diarization, sticky live block, mockup transcript, suggestion dock.
 
 ## License
 
