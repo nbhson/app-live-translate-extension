@@ -24,15 +24,24 @@ export function parseSuggestAnswers(raw) {
     if (objMatch) {
       const obj = tryParseJson(objMatch[0]);
       if (obj && (obj.answers || obj.structures)) {
-        const structures = Array.isArray(obj.structures)
+        let structures = Array.isArray(obj.structures)
           ? obj.structures.slice(0, 5).map((s) => String(s).trim()).filter(Boolean)
           : [];
-        const answers = Array.isArray(obj.answers)
+        let answers = Array.isArray(obj.answers)
           ? obj.answers.slice(0, 5).map((s) => String(s).trim()).filter(Boolean)
           : [];
+        // filter answers that are actually structures (contain " + " and short)
+        const isStructureLike = (s) => s.includes(' + ') && s.split(/\s+/).length < 12;
+        answers = answers.filter((a) => !isStructureLike(a));
+        structures = structures.filter((s) => s.length >= 3);
+        // if answers were filtered out but structures remain, don't copy structures to answers
         if (answers.length || structures.length) return { structures, answers };
       }
-      if (Array.isArray(obj)) return { structures: [], answers: obj.slice(0, 5).map((s) => String(s).trim()).filter(Boolean) };
+      if (Array.isArray(obj)) {
+        let arr = obj.slice(0, 5).map((s) => String(s).trim()).filter(Boolean);
+        arr = arr.filter((a) => !(a.includes(' + ') && a.split(/\s+/).length < 12));
+        return { structures: [], answers: arr };
+      }
     }
   } catch (_) {}
   try {

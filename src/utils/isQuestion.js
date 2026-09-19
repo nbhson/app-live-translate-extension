@@ -12,8 +12,13 @@ const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(
 // and fused suffixes ("youestion" -> "you") from fast speech.
 function normalizeForQuestion(raw) {
   let s = String(raw || '').trim();
-  // strip leading single char prefix before WH (e.g. "s How are you", "n How are you")
-  s = s.replace(/^[a-z]\s+(?=(?:who|what|when|where|why|how|which|whom|whose|whether)\b)/i, '');
+  // strip leading single char prefix before WH/tag
+  s = s.replace(/^[a-z]\s+(?=(?:who|what|when|where|why|how|which|whom|whose|whether|okay|ok|yeah|yep|right|how's|what's|where's)\b)/i, '');
+  // generic single-char noise like "h one..." / "o success..."
+  if (/^[a-z]\s+\w/i.test(s) && !/^[IA]\s/i.test(s) && s.split(/\s+/).length >= 2) {
+    const parts = s.split(/\s+/);
+    if (parts[0].length === 1 && parts[1].length >= 2) s = s.replace(/^[a-z]\s+/i, '');
+  }
   // fix fused "you"+"estion" / "how"+"estion" artifacts from fast speech
   s = s.replace(/\b(you)estion\b/gi, '$1');
   s = s.replace(/\b(how)estion\b/gi, '$1');
@@ -44,6 +49,8 @@ export function isQuestion(text, opts = {}) {
   const words = lower.split(/\s+/).filter(Boolean);
   const wc = words.length;
   if (wc < 2) return false;
+  // incomplete fragment ending with preposition/article — wait for next chunk
+  if (/\b(to|for|with|of|in|on|at|a|an|the)\s*$/i.test(t)) return false;
 
   // Library first (if loaded): compromise
   try {

@@ -712,7 +712,11 @@ const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(
 
 function normalizeForQuestion(raw){
   let s=String(raw||'').trim();
-  s=s.replace(/^[a-z]\s+(?=(?:who|what|when|where|why|how|which|whom|whose|whether)\b)/i,'');
+  s=s.replace(/^[a-z]\s+(?=(?:who|what|when|where|why|how|which|whom|whose|whether|okay|ok|yeah|yep|right|how's|what's|where's)\b)/i,'');
+  if(/^[a-z]\s+\w/i.test(s) && !/^[IA]\s/i.test(s) && s.split(/\s+/).length>=2){
+    const parts=s.split(/\s+/);
+    if(parts[0].length===1 && parts[1].length>=2) s=s.replace(/^[a-z]\s+/i,'');
+  }
   s=s.replace(/\b(you)estion\b/gi,'$1');
   s=s.replace(/\b(how)estion\b/gi,'$1');
   s=s.replace(/\b(what)estion\b/gi,'$1');
@@ -740,6 +744,7 @@ function isQuestion(text) {
   const words = lower.split(/\s+/).filter(Boolean);
   const wc = words.length;
   if (wc < 2) return false;
+  if (/\b(to|for|with|of|in|on|at|a|an|the)\s*$/i.test(t)) return false;
 
   // Library first (if loaded): compromise
   try {
@@ -1042,16 +1047,23 @@ function parseSuggestAnswers(raw) {
   if (!raw || typeof raw !== 'string') return { structures: [], answers: [] };
   const noFence = raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/i,'').trim();
   const tryParse = (s) => JSON.parse(s.replace(/,\s*([}\]])/g,'$1'));
+  const isStructureLike = (s) => s.includes(' + ') && s.split(/\s+/).length < 12;
   try {
     const objMatch = noFence.match(/\{[\s\S]*\}/);
     if (objMatch) {
       const obj = tryParse(objMatch[0]);
       if (obj && (obj.answers || obj.structures)) {
-        const structures = Array.isArray(obj.structures) ? obj.structures.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
-        const answers = Array.isArray(obj.answers) ? obj.answers.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
+        let structures = Array.isArray(obj.structures) ? obj.structures.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
+        let answers = Array.isArray(obj.answers) ? obj.answers.slice(0,5).map(s=>String(s).trim()).filter(Boolean) : [];
+        answers = answers.filter(a => !isStructureLike(a));
+        structures = structures.filter(s => s.length >= 3);
         if (answers.length || structures.length) return { structures, answers };
       }
-      if (Array.isArray(obj)) return { structures: [], answers: obj.slice(0,5).map(s=>String(s).trim()).filter(Boolean) };
+      if (Array.isArray(obj)) {
+        let arr = obj.slice(0,5).map(s=>String(s).trim()).filter(Boolean);
+        arr = arr.filter(a => !isStructureLike(a));
+        return { structures: [], answers: arr };
+      }
     }
   } catch {}
   try {
@@ -1098,9 +1110,23 @@ async function triggerSuggestForIndex(idx, question) {
       const raw = await callProviderForSuggest(prompt);
       const parsed = parseSuggestAnswers(raw);
       let { structures, answers } = parsed;
+      // filter structure-like answers (contain " + " and short) already done in parse, but double-check
+      answers = answers.filter(a => !(a.includes(' + ') && a.split(/\s+/).length < 15));
+      // Validate answer quality: must be substantial (≥ 60 chars and ≥ 15 words)
+      const isSubstantial = (a) => a.length >= 60 && a.split(/\s+/).length >= 15;
+      const substantialAnswers = answers.filter(isSubstantial);
+      if (substantialAnswers.length > 0) answers = substantialAnswers;
+      else if (answers.length > 0 && answers.every(a => a.length < 60)) {
+        // all answers too short — likely structures, don't show as complete answers
+        answers = [];
+      }
       if (answers.length === 0 && structures.length === 0) throw new Error('Failed to parse suggestions');
-      if (answers.length === 0) answers = structures;
-      if (structures.length === 0) structures = synthesizeStructures(answers);
+      if (answers.length === 0) {
+        // keep answers empty — will show only structures, not fake complete answers
+        // don't copy structures into answers
+        console.warn('[suggest] LLM returned only structures for', question);
+      }
+      if (structures.length === 0 && answers.length > 0) structures = synthesizeStructures(answers);
       answers = answers.slice(0,3);
       structures = structures.slice(0,3);
       questionSuggestions[idx] = { state: 'done', question, answers, structures };
@@ -1214,13 +1240,19 @@ function renderDockBody() {
     `).join('') + `</div>`;
   }
   if (showComplete) {
-    html += `<div class="dock-complete-label">Complete answers</div>`;
-    html += data.answers.map(a=>`
-      <div class="dock-complete-card">
-        <span style="flex:1">${escapeHtml(a)}</span>
-        <button class="copy-btn" data-text="${escapeHtml(a).replace(/"/g,'&quot;')}">Copy</button>
-      </div>
-    `).join('');
+    if (data.answers && data.answers.length > 0) {
+      html += `<div class="dock-complete-label">Complete answers</div>`;
+      html += data.answers.map(a=>`
+        <div class="dock-complete-card">
+          <span style="flex:1">${escapeHtml(a)}</span>
+          <button class="copy-btn" data-text="${escapeHtml(a).replace(/"/g,'&quot;')}">Copy</button>
+        </div>
+      `).join('');
+    } else if (showStructure) {
+      // no complete answers, but structures shown — don't show empty label
+    } else {
+      html += `<div class="suggest-empty">No complete answers yet — try regenerating.</div>`;
+    }
   }
   suggestionBody.innerHTML = html;
   suggestionBody.querySelectorAll('[data-text]').forEach(btn=>{
@@ -1364,8 +1396,54 @@ function splitIntoUtterances(text) {
  * @returns {Promise<void>}
  */
 async function finalizeText(text) {
-  const cleanText = text.trim();
+  let cleanText = text.trim();
   if (!cleanText) return;
+  // Merge fragmented across consecutive finals: e.g. "how to push yourself to" + "o success yeah"
+  // If previous utterance is incomplete (ends with to/for/with) and current is tag continuation
+  if (finalizedEnPhrases.length > 0 && !text.includes('.') && !text.includes('!') && !text.includes('?')) {
+    const prevIdx = finalizedEnPhrases.length - 1;
+    const prevText = finalizedEnPhrases[prevIdx];
+    const prevCache = utteranceDomCache[prevIdx];
+    const isPrevPendingLive = prevCache && prevCache.isLive;
+    if (!isPrevPendingLive && prevText) {
+      const prevIncomplete = /\b(to|for|with|of|in|on|at|a|an|the)\s*$/i.test(prevText.trim());
+      const curNorm = normalizeForSplit(cleanText);
+      const combined = (prevText + ' ' + curNorm).trim();
+      const curIsTagFrag = /\b(success|right|yeah|okay|ok|yep|huh)\s*\??\s*$/i.test(curNorm) || curNorm.split(/\s+/).length <= 3;
+      // also check if prev is WH-started and cur is short continuation
+      const prevIsWH = RE_WH_START.test(prevText) || RE_Q_START_SIDE.test(prevText);
+      if ((prevIncomplete || (prevIsWH && curIsTagFrag)) && isQuestion(combined) && combined.split(/\s+/).length <= 14) {
+        // remove previous utterance (pop)
+        const removedEn = finalizedEnPhrases.pop();
+        const removedVi = finalizedViPhrases.pop();
+        utteranceSpeakers.pop();
+        const removedCache = utteranceDomCache.pop();
+        if (removedCache && removedCache.root && removedCache.root.parentNode) {
+          try { removedCache.root.remove(); } catch {}
+        }
+        // adjust selectedQuestionIdx and suggestions map (shift indices)
+        // Note: compactTranscriptMemory already handled indices, now we manually shift
+        // For simplicity, if previous was a question, remove its suggestion
+        if (questionSuggestions[prevIdx]) {
+          delete questionSuggestions[prevIdx];
+          if (selectedQuestionIdx === prevIdx) selectedQuestionIdx = null;
+          // shift down any higher indices
+          const newQs = {};
+          for (const k of Object.keys(questionSuggestions)) {
+            const ki = Number(k);
+            if (ki > prevIdx) newQs[ki - 1] = questionSuggestions[k];
+            else newQs[ki] = questionSuggestions[k];
+          }
+          questionSuggestions = newQs;
+          if (selectedQuestionIdx !== null && selectedQuestionIdx > prevIdx) selectedQuestionIdx--;
+        }
+        // update caches indices for remaining
+        utteranceDomCache.forEach((c, i) => { if (c && c.root) c.root.dataset.index = i; });
+        cleanText = combined;
+        // continue to split normally (will be one utterance)
+      }
+    }
+  }
 
   // Memory guard: drop the oldest utterances (beyond 2x DOM cap) and re-index
   // everything before computing any indices below. Mirror of

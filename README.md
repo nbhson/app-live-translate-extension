@@ -4,6 +4,8 @@ Real-time English speech-to-text + Vietnamese translation + AI-powered suggested
 
 Version **1.0.1** · MV3 · MIT
 
+![Live Translate Demo](<Screenshot 2026-09-19 at 14.47.07.png>)
+
 ---
 
 ## Tổng quan kiến trúc
@@ -475,6 +477,11 @@ tests/
 
 ## Changelog
 
+- **2026-09-19c**: Fix merge fragment + lọc gợi ý cấu trúc lẫn câu hoàn chỉnh:
+  - `isQuestion`: guard fragment dở `…to/for/with` (chờ chunk sau), strip generic single-char noise `o success → success`, mở rộng strip prefix cho `okay/right/how's/what's`.
+  - `parseSuggestAnswers` (`sidepanel.js:1042`, `src/utils/parseSuggestAnswers.js:1`): lọc `answers` dạng cấu trúc (`" + "` + <12 từ), giữ `structures` riêng — không copy `structures → answers`.
+  - `triggerSuggestForIndex` / `renderDockBody` (`sidepanel.js:1098`): validate câu hoàn chỉnh ≥60 chars & ≥15 words; nếu chỉ có structures thì dock chỉ hiện Structures, không fake Complete answers.
+  - `finalizeText` (`sidepanel.js:1396`): merge 2 final liên tiếp khi prev dở (`to/for/...`) + cur là tag ngắn (`success/yeah/right`) → `how to push yourself to` + `o success yeah` → `how to push yourself to success yeah` (pop utterance cũ, re-index `questionSuggestions`).
 - **2026-09-19b**: Fix ảnh 2: `h one sentence okay ?` + song song gợi ý:
   - `splitIntoUtterances`: thêm strip `h one...`→`one...` (single-consonant noise), iterative Q→A đệ quy fix `I'm doing well|what's your name|my name is Esther|how old are you|I'm 33...`.
   - `triggerSuggestForIndex`: bỏ queue tuần tự → song song, display hết loading ngay; `updateDock` auto-scroll phải.
