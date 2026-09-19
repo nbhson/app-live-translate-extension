@@ -1,12 +1,53 @@
 function stripCodeFence(s) {
-  // remove ```json ... ``` wrappers
-  return s.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+  // robust: extract content inside ```json ... ``` if present, else strip stray fences
+  const fenceMatch = s.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenceMatch) return fenceMatch[1].trim();
+  return s.replace(/```/g, '').trim();
 }
 
 function tryParseJson(s) {
   // handle trailing commas: {"a":1,} -> {"a":1}
   const cleaned = s.replace(/,\s*([}\]])/g, '$1');
   return JSON.parse(cleaned);
+}
+
+function extractLenientArrays(s) {
+  // last resort when JSON is broken (e.g. literal newlines inside strings): extract "structures"/"answers" via bracket scan
+  function extractArray(key) {
+    const idx = s.search(new RegExp(`"${key}"\\s*:`, 'i'));
+    if (idx === -1) return [];
+    const bracketStart = s.indexOf('[', idx);
+    if (bracketStart === -1) return [];
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let start = -1;
+    let end = -1;
+    for (let i = bracketStart; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '[') { if (depth === 0) start = i; depth++; }
+      else if (c === ']') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    if (start === -1 || end === -1) return [];
+    const content = s.slice(start, end + 1);
+    const re = /"((?:\\.|[^"\\])*)"/g;
+    let m;
+    const arr = [];
+    while ((m = re.exec(content)) !== null) {
+      let v = m[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').trim();
+      if (v) arr.push(v);
+      if (arr.length >= 5) break;
+    }
+    return arr;
+  }
+  return { structures: extractArray('structures'), answers: extractArray('answers') };
 }
 
 /**
@@ -43,7 +84,16 @@ export function parseSuggestAnswers(raw) {
         return { structures: [], answers: arr };
       }
     }
-  } catch (_) {}
+  } catch (_) {
+    // lenient fallback for broken JSON (unescaped newlines etc.)
+    try {
+      const { structures: ls, answers: la } = extractLenientArrays(noFence);
+      const isStructureLike = (s) => s.includes(' + ') && s.split(/\s+/).length < 12;
+      let answers = la.filter((a) => !isStructureLike(a)).filter(Boolean).slice(0, 5);
+      let structures = ls.filter((s) => s.length >= 3).slice(0, 5);
+      if (answers.length || structures.length) return { structures, answers };
+    } catch {}
+  }
   try {
     const m = noFence.match(/\[[\s\S]*\]/);
     if (m) {
@@ -58,6 +108,13 @@ export function parseSuggestAnswers(raw) {
     .filter(Boolean)
     .filter(s => s.length >= 3)
     .slice(0, 5);
+  // guard: never return raw JSON as an answer — treat as parse failure
+  if (lines.length === 1 && /^\{[\s\S]*\}$/.test(lines[0]) && /"structures"|"answers"/.test(lines[0])) {
+    return { structures: [], answers: [] };
+  }
+  if (lines.length > 0 && lines.every(l => /^\{|\["/.test(l) && /"structures"|"answers"/.test(l))) {
+    return { structures: [], answers: [] };
+  }
   return { structures: [], answers: lines };
 }
 

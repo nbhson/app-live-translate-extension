@@ -1427,9 +1427,23 @@ function stopCompressTimer() {
 
 function parseSuggestAnswers(raw) {
   if (!raw || typeof raw !== 'string') return { structures: [], answers: [] };
-  const noFence = raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/i,'').trim();
+  const fenceMatch = raw.trim().match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const noFence = fenceMatch ? fenceMatch[1].trim() : raw.trim().replace(/```/g,'').trim();
   const tryParse = (s) => JSON.parse(s.replace(/,\s*([}\]])/g,'$1'));
   const isStructureLike = (s) => s.includes(' + ') && s.split(/\s+/).length < 12;
+  function extractLenientArraysSide(s){
+    function extractArray(key){
+      const idx = s.search(new RegExp(`"${key}"\\s*:`, 'i')); if(idx===-1) return [];
+      const b = s.indexOf('[', idx); if(b===-1) return [];
+      let depth=0,inStr=false,esc=false,start=-1,end=-1;
+      for(let i=b;i<s.length;i++){ const c=s[i]; if(inStr){ if(esc) esc=false; else if(c==='\\') esc=true; else if(c==='"') inStr=false; continue; } if(c==='"') inStr=true; else if(c==='['){ if(depth===0) start=i; depth++; } else if(c===']'){ depth--; if(depth===0){ end=i; break; } } }
+      if(start===-1||end===-1) return [];
+      const content=s.slice(start,end+1); const re=/"((?:\\.|[^"\\])*)"/g; let m; const arr=[];
+      while((m=re.exec(content))!==null){ let v=m[1].replace(/\\"/g,'"').replace(/\\n/g,'\n').trim(); if(v) arr.push(v); if(arr.length>=5) break; }
+      return arr;
+    }
+    return { structures: extractArray('structures'), answers: extractArray('answers') };
+  }
   try {
     const objMatch = noFence.match(/\{[\s\S]*\}/);
     if (objMatch) {
@@ -1447,7 +1461,9 @@ function parseSuggestAnswers(raw) {
         return { structures: [], answers: arr };
       }
     }
-  } catch {}
+  } catch(_) {
+    try{ const {structures:ls,answers:la}=extractLenientArraysSide(noFence); let answers=la.filter(a=>!isStructureLike(a)).filter(Boolean).slice(0,5); let structures=ls.filter(s=>s.length>=3).slice(0,5); if(answers.length||structures.length) return {structures, answers}; }catch{}
+  }
   try {
     const m = noFence.match(/\[[\s\S]*\]/);
     if (m) {
@@ -1456,6 +1472,10 @@ function parseSuggestAnswers(raw) {
     }
   } catch {}
   const lines = noFence.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').replace(/^["']|["']$/g,'').trim()).filter(s=>s.length>=3).slice(0,5);
+  if (lines.length===1 && /^\{[\s\S]*\}$/.test(lines[0]) && /"structures"|"answers"/.test(lines[0])) return { structures: [], answers: [] };
+  if (lines.length>0 && lines.every(l => /^\{|\["/.test(l) && /"structures"|"answers"/.test(l))) return { structures: [], answers: [] };
+  // extra guard: never return a single line that IS raw JSON (image bug)
+  if (lines.length===1 && lines[0].startsWith('{"structures"')) return { structures: [], answers: [] };
   return { structures: [], answers: lines };
 }
 
@@ -1492,6 +1512,9 @@ async function triggerSuggestForIndex(idx, question) {
       const raw = await callProviderForSuggest(prompt);
       const parsed = parseSuggestAnswers(raw);
       let { structures, answers } = parsed;
+      // safety: never keep raw JSON string as an answer (bug: fallback lines -> JSON display)
+      answers = answers.filter(a => !(a.trim().startsWith('{') && /"structures"|"answers"/.test(a)));
+      structures = structures.filter(s => !(s.trim().startsWith('{') && /"structures"|"answers"/.test(s)));
       // filter structure-like answers (contain " + " and short) already done in parse, but double-check
       answers = answers.filter(a => !(a.includes(' + ') && a.split(/\s+/).length < 15));
       // Validate answer quality: must be substantial (≥ 60 chars and ≥ 15 words)
