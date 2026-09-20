@@ -37,6 +37,30 @@ function normalizeInput(text) {
 // Heuristic: is the clause a question starter? (used for comma-split)
 const RE_Q_START = /^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's|is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\b/i;
 const RE_DECLARATIVE_START = /^(i'm|i am|i was|my name|i was born|today|now|then|here|my|our|your|i've|we're|they're|i)\b/i;
+const RE_WH_SUBORDINATE_SPLIT = /^(who|what|when|where|why|how|which|whom|whose|whether)\s+(someone|somebody|something|somewhere|anyone|anybody|anything|everyone|everybody|people|they|he|she|it|we|you|one)\s+(is|are|was|were|will|would|can|could|should|have|has|had|be|been)\b/i;
+const RE_IMPERATIVE_DO_SPLIT = /^(do|does|did)\s+(this|that|these|those|it)\b/i;
+function isQuestionForSplit(s) {
+  const t = String(s || '').trim();
+  if (!t) return false;
+  if (t.includes('?')) return true;
+  const lower = t.toLowerCase();
+  const words = lower.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return false;
+  if (/\b(to|for|with|of|in|on|at|a|an|the)\s*$/i.test(t)) return false;
+  if (RE_WH_SUBORDINATE_SPLIT.test(t)) return false;
+  if (RE_IMPERATIVE_DO_SPLIT.test(t)) {
+    if (!/\b(you|we|they|he|she)\b/i.test(t.split(/\s+/).slice(0,4).join(' '))) return false;
+  }
+  if (/^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's)\b/i.test(t) && !RE_WH_SUBORDINATE_SPLIT.test(t)) return true;
+  if (/^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody|this|that|these|those)\b/i.test(t)) {
+    const aux = t.split(/\s+/)[0].toLowerCase();
+    const isDo = /^(do|does|did)\b/i.test(aux);
+    if (isDo && /^(do|does|did)\s+(this|that|these|those|it)\b/i.test(t) && !/\b(you|we|they|he|she|i)\b/i.test(t.toLowerCase())) return false;
+    return true;
+  }
+  if (/\b(do you|does he|does she|do they|did you|are you|is he|is she|are they|is there|are there|can you|could you|would you|will you|have you|has anyone|do you have|are you going|have you ever|would you like)\b/i.test(lower) && words.length >= 4) return true;
+  return false;
+}
 function isNoiseUtterance(s) {
   const t = s.trim();
   if (!t) return true;
@@ -65,10 +89,29 @@ function findQuestionDeclarativeSplit(seg) {
     const left = words.slice(0, i).join(' ');
     const right = words.slice(i).join(' ');
     if (left.split(/\s+/).length < 3 || right.split(/\s+/).length < 2) continue;
-    const leftIsQ = RE_Q_START.test(left);
-    if (!leftIsQ) continue;
+    if (!RE_Q_START.test(left) || !isQuestionForSplit(left)) continue;
     if (!RE_DECLARATIVE_START.test(right)) continue;
-    // earliest valid split
+    return charPos[i];
+  }
+  return -1;
+}
+function findDeclarativeQuestionSplit(seg) {
+  const words = seg.split(/\s+/);
+  if (words.length < 6) return -1;
+  const segWords = seg.split(/\s+/);
+  const charPos = [0];
+  let p = 0;
+  for (let wi = 0; wi < segWords.length; wi++) {
+    p += segWords[wi].length + 1;
+    charPos.push(p);
+  }
+  for (let i = 3; i <= words.length - 3; i++) {
+    const left = words.slice(0, i).join(' ');
+    const right = words.slice(i).join(' ');
+    if (left.split(/\s+/).length < 3 || right.split(/\s+/).length < 3) continue;
+    if (isQuestionForSplit(left)) continue;
+    if (!isQuestionForSplit(right)) continue;
+    if (!RE_Q_START.test(right)) continue;
     return charPos[i];
   }
   return -1;
@@ -114,7 +157,6 @@ export function splitIntoUtterances(text) {
     const segOut = [];
     while (queue.length) {
       const cur = queue.shift();
-      // Priority 1: question -> declarative boundary (e.g. "what's your name my name is Esther")
       const qdIdx = findQuestionDeclarativeSplit(cur);
       if (qdIdx > 0) {
         let left = cur.slice(0, qdIdx).trim().replace(/,\s*$/, '');
@@ -125,19 +167,45 @@ export function splitIntoUtterances(text) {
           continue;
         }
       }
+      const dqIdx = findDeclarativeQuestionSplit(cur);
+      if (dqIdx > 0) {
+        let left = cur.slice(0, dqIdx).trim().replace(/,\s*$/, '');
+        const right = cur.slice(dqIdx).trim().replace(/^,\s*/, '');
+        if (left && right && right.split(/\s+/).length >= 3 && left.split(/\s+/).length >= 2) {
+          queue.unshift(right);
+          segOut.push(left);
+          continue;
+        }
+      }
       const lower = cur.toLowerCase();
       let splitPos = -1;
-      let splitWord = '';
-      for (const word of STRONG_SPLIT_WORDS) {
-        const re = new RegExp(`\\b${word}\\b`, 'i');
-        const m = re.exec(cur);
-        if (m && m.index > 0) {
-          const prefix = cur.slice(0, m.index).trim();
-          const prefixWords = prefix ? prefix.split(/\s+/).length : 0;
-          if (prefixWords >= MIN_PREFIX_WORDS) {
-            if (splitPos === -1 || m.index < splitPos) {
-              splitPos = m.index;
-              splitWord = word;
+      const wordsAll = cur.split(/\s+/);
+      if (wordsAll.length >= 6) {
+        const wPos = [0];
+        let pp = 0;
+        for (let wi = 0; wi < wordsAll.length; wi++) { pp += wordsAll[wi].length + 1; wPos.push(pp); }
+        for (let i = MIN_PREFIX_WORDS; i <= wordsAll.length - 3; i++) {
+          const right = wordsAll.slice(i).join(' ');
+          const left = wordsAll.slice(0, i).join(' ');
+          if (left.split(/\s+/).length < MIN_PREFIX_WORDS) continue;
+          if (!isQuestionForSplit(right)) continue;
+          if (!RE_Q_START.test(right)) continue;
+          splitPos = wPos[i];
+          break;
+        }
+      }
+      if (splitPos === -1) {
+        for (const word of STRONG_SPLIT_WORDS) {
+          const re = new RegExp(`\\b${word}\\b`, 'i');
+          const m = re.exec(cur);
+          if (m && m.index > 0) {
+            const prefix = cur.slice(0, m.index).trim();
+            const suffix = cur.slice(m.index).trim();
+            const prefixWords = prefix ? prefix.split(/\s+/).length : 0;
+            if (prefixWords >= MIN_PREFIX_WORDS && isQuestionForSplit(suffix)) {
+              if (splitPos === -1 || m.index < splitPos) {
+                splitPos = m.index;
+              }
             }
           }
         }
@@ -147,7 +215,8 @@ export function splitIntoUtterances(text) {
           const idx = lower.indexOf(w + ' ');
           if (idx > 0) {
             const prefix = cur.slice(0, idx).trim();
-            if (prefix.split(/\s+/).length >= MIN_PREFIX_WORDS) { splitPos = idx; break; }
+            const suffix = cur.slice(idx).trim();
+            if (prefix.split(/\s+/).length >= MIN_PREFIX_WORDS && isQuestionForSplit(suffix)) { splitPos = idx; break; }
           }
         }
       }

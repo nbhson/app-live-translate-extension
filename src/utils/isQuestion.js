@@ -11,6 +11,11 @@ const RE_WONDERING = /\b(i was wondering if|i wonder if|wondering if|do you mind
 const RE_POLITE = /\b(could you maybe|would you maybe|could you kindly|would you kindly|would you please|could you please|would you be able to|could you be able to|could you just|would you just)\b/i;
 const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
 const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
+// Subordinate WH-clause: "how someone is likely..." (WH + subject pronoun/noun + verb) — not a question without ?
+const RE_WH_SUBORDINATE = /^(who|what|when|where|why|how|which|whom|whose|whether)\s+(someone|somebody|something|somewhere|someone's|somebodys|anyone|anybody|anything|anywhere|everyone|everybody|everything|people|they|he|she|it|we|you|one|someone|something)\s+(is|are|was|were|will|would|can|could|should|have|has|had|do|does|did|be|been|being|is likely|are likely|was likely)\b/i;
+// Imperative "do this/that ..." without subject pronoun — not a question
+const RE_IMPERATIVE_DO = /^(do|does|did)\s+(this|that|these|those|it)\b/i;
+const RE_AUX_STRICT = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody|this|that|these|those)\b/i;
 
 // STT noise normalizer — strip leading single-char artifacts ("s How are you" -> "How are you")
 // and fused suffixes ("youestion" -> "you") from fast speech.
@@ -128,11 +133,45 @@ export function isQuestion(text, opts = {}) {
 
   if (RE_WH_ABOUT.test(t) && wc >= 2 && !t.endsWith('!')) return true;
   if (RE_CASUAL_Q.test(t) && wc >= 2) return true;
-  if (RE_WH_START.test(t)) {
-    // contractions like "what's" count as WH
-    if (wc >= 2 && !t.endsWith('!')) return true;
+  // Imperative guard: "do this with..." is not a question (unless tag/trailing/?)
+  if (RE_IMPERATIVE_DO.test(t) && !RE_TAG_Q.test(t) && !RE_TRAILING_OR.test(t) && !t.includes('?')) {
+    // allow "Is this correct?" but not "Do this with..." — "do" imperative has different semantics from "is"
+    if (/^(do|does|did)\b/i.test(t)) {
+      // check if second word is demonstrative and third is preposition/verb without pronoun "you"
+      // "Do this with the help..." -> imperative declarative
+      if (!/\b(you|we|they|he|she|it|there)\b/i.test(t.split(/\s+/).slice(0,4).join(' '))) {
+        // fall through to not count as WH/AUX question; still allow RE_EMBEDDED / tag to decide
+      } else {
+        // has pronoun, treat as potential question (e.g. "Do this you ..."? rare)
+      }
+    }
+  } else if (RE_WH_START.test(t)) {
+    // WH-start: filter subordinate clauses like "how someone is likely..."
+    if (RE_WH_SUBORDINATE.test(t)) {
+      // subordinate noun clause, not a standalone question
+      // e.g. "how someone is likely to answer them" -> false unless other cues fire
+    } else if (wc >= 2 && !t.endsWith('!')) return true;
   }
-  if (RE_AUX_START.test(t) && wc >= 2) return true;
+  // Aux-start: require subject pronoun to avoid imperatives like "do this..."
+  if (RE_AUX_START.test(t) && wc >= 2) {
+    const auxWord = t.split(/\s+/)[0].toLowerCase();
+    const needsSubject = /^(do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had)\b/i.test(auxWord);
+    if (needsSubject) {
+      const isDo = /^(do|does|did)\b/i.test(auxWord);
+      if (isDo) {
+        // for "do/does/did" require true pronoun subject, not demonstrative "this/that" (imperative)
+        if (/^(do|does|did)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody)\b/i.test(t)) return true;
+        if (/^(is there|are there|was there|were there)\b/i.test(t)) return true;
+      } else {
+        if (RE_AUX_STRICT.test(t)) return true;
+        if (/^(is there|are there|was there|were there)\b/i.test(t)) return true;
+      }
+      // otherwise aux without pronoun subject -> not question (e.g. "do this with...")
+      // fall through to other checks (EMBEDDED, etc.)
+    } else {
+      return true;
+    }
+  }
   if (RE_TAG_Q.test(t)) return true;
   // tag without comma: only for short markers (right/okay/yeah...) and not declarative adjectives like "correct"
   if (isNoCommaTag(t, wc)) return true;

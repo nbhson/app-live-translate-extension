@@ -4,6 +4,7 @@
  * @module services/llm/questionDetect
  */
 import { sanitizePromptContext } from '../../utils/sanitizePromptContext.js';
+import { isQuestion } from '../../utils/isQuestion.js';
 
 export function buildDetectPrompt(text) {
   const safe = sanitizePromptContext(String(text || '').slice(0, 800));
@@ -16,6 +17,7 @@ Input block: """${safe}"""
 
 Rules:
 - Split on missing punctuation too (e.g. "Where are you from where were you born" -> 2 questions).
+- Extract ONLY the question part, exclude declarative statements. Example: "Four of us do you have any siblings" -> ["do you have any siblings"] (exclude "Four of us").
 - Keep each question as a complete sentence (3-20 words), without trailing "?".
 - If block has no question, return empty array.
 - If block has 1 question, return array with 1 element.
@@ -74,26 +76,41 @@ export function validateAiQuestions(original, questions) {
     const t = String(q).trim();
     if (!t || t.length < 5) continue;
     if (t.length > 250) continue;
-    // each question should share at least 60% words with original to avoid hallucination
+    // must be a plausible question (avoid declarative fragments like "Four of us")
+    if (!isQuestion(t) && t.split(/\s+/).filter(Boolean).length < 6) {
+      // allow longer declarative-like fragments only if they clearly contain question pattern
+      // e.g. "do you have any siblings" isQuestion true, but "Four of us" false -> skip
+      if (!/\b(do you|are you|is there|can you|could you|will you|have you|where|what|how|who|when|why)\b/i.test(t)) continue;
+    }
+    // each question should share at least 50% words with original to avoid hallucination
     const qWords = t.toLowerCase().split(/\s+/).filter(Boolean);
     let hit = 0;
     for (const w of qWords) if (origWords.has(w)) hit++;
     if (qWords.length >= 3 && hit / qWords.length < 0.5) continue;
-    // must not duplicate
     if (out.includes(t)) continue;
     out.push(t);
   }
-  // if AI returned single question that is essentially whole block, keep as is
-  // if multiple, ensure combined length roughly matches original (allow 20% diff due to trimming)
-  if (out.length >= 2) {
-    const joinedLen = out.join(' ').length;
+  // Filter out non-question fragments when we have at least one real question
+  const hasRealQ = out.some((q) => isQuestion(q));
+  let filtered = hasRealQ ? out.filter((q) => isQuestion(q) || q.split(/\s+/).length >= 5) : out;
+  // if multiple, ensure combined length roughly matches original (allow 30% diff, looser for declarative+question extraction)
+  if (filtered.length >= 2) {
+    const joinedLen = filtered.join(' ').length;
     const origLen = String(original).trim().length;
-    if (joinedLen < origLen * 0.5 || joinedLen > origLen * 1.4) {
+    if (joinedLen < origLen * 0.4 || joinedLen > origLen * 1.5) {
       // suspicious hallucination / missing content
-      return [];
+      // keep single best question instead of dropping all
+      const best = filtered.find((q) => isQuestion(q));
+      return best ? [best] : [];
     }
   }
-  return out.slice(0, 4);
+  // Single question extraction: if AI extracted a shorter question from declarative+question block, keep it
+  // e.g. original "Four of us do you have any siblings" -> ["do you have any siblings"] is valid
+  if (filtered.length === 1 && String(original).trim().length > filtered[0].length + 8) {
+    // ensure the single question is actually a question
+    if (!isQuestion(filtered[0])) return [];
+  }
+  return filtered.slice(0, 4);
 }
 
 /**

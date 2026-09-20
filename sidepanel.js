@@ -920,6 +920,9 @@ const RE_WONDERING = /\b(i was wondering if|i wonder if|wondering if|do you mind
 const RE_POLITE = /\b(could you maybe|would you maybe|could you kindly|would you kindly|would you please|could you please|would you be able to|could you be able to|could you just|would you just)\b/i;
 const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
 const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
+const RE_WH_SUBORDINATE = /^(who|what|when|where|why|how|which|whom|whose|whether)\s+(someone|somebody|something|somewhere|someone's|somebodys|anyone|anybody|anything|anywhere|everyone|everybody|everything|people|they|he|she|it|we|you|one|someone|something)\s+(is|are|was|were|will|would|can|could|should|have|has|had|do|does|did|be|been|being|is likely|are likely|was likely)\b/i;
+const RE_IMPERATIVE_DO = /^(do|does|did)\s+(this|that|these|those|it)\b/i;
+const RE_AUX_STRICT = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody|this|that|these|those)\b/i;
 
 function normalizeForQuestion(raw){
   let s=String(raw||'').trim();
@@ -1014,10 +1017,33 @@ function isQuestion(text) {
 
   if (RE_WH_ABOUT.test(t) && wc >= 2 && !t.endsWith('!')) return true;
   if (RE_CASUAL_Q.test(t) && wc >= 2) return true;
-  if (RE_WH_START.test(t)) {
-    if (wc >= 2 && !t.endsWith('!')) return true;
+  if (RE_IMPERATIVE_DO.test(t) && !RE_TAG_Q.test(t) && !RE_TRAILING_OR.test(t) && !t.includes('?')) {
+    if (/^(do|does|did)\b/i.test(t)) {
+      if (!/\b(you|we|they|he|she|it|there)\b/i.test(t.split(/\s+/).slice(0,4).join(' '))) {
+        // imperative declarative, skip WH/AUX fast path, let later strict aux handle
+      } else {}
+    }
+  } else if (RE_WH_START.test(t)) {
+    if (RE_WH_SUBORDINATE.test(t)) {
+      // subordinate noun clause, not a standalone question
+    } else if (wc >= 2 && !t.endsWith('!')) return true;
   }
-  if (RE_AUX_START.test(t) && wc >= 2) return true;
+  if (RE_AUX_START.test(t) && wc >= 2) {
+    const auxWord = t.split(/\s+/)[0].toLowerCase();
+    const needsSubject = /^(do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had)\b/i.test(auxWord);
+    if (needsSubject) {
+      const isDo = /^(do|does|did)\b/i.test(auxWord);
+      if (isDo) {
+        if (/^(do|does|did)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody)\b/i.test(t)) return true;
+        if (/^(is there|are there|was there|were there)\b/i.test(t)) return true;
+      } else {
+        if (RE_AUX_STRICT.test(t)) return true;
+        if (/^(is there|are there|was there|were there)\b/i.test(t)) return true;
+      }
+    } else {
+      return true;
+    }
+  }
   if (RE_TAG_Q.test(t)) return true;
   if (isNoCommaTag(t, wc)) return true;
   if (RE_EMBEDDED.test(t) && wc >= 4) return true;
@@ -1046,6 +1072,14 @@ function shouldTriggerAiSplitSide(text){
     const markers=[]; let m; while((m=re.exec(lower))!==null) markers.push(m.index);
     if(markers.length>=2 && markers[1]-markers[0]>12) return true;
   }
+  if(words.length>=6){
+    const emb=lower.search(/\b(do you|does he|does she|do they|did you|are you|is he|is she|are they|is there|are there|can you|could you|will you|would you|have you|has anyone|how many|what is|where are|who are|which one)\b/i);
+    if(emb>12 && emb < lower.length -10){
+      const prefixWords=lower.slice(0,emb).trim().split(/\s+/).filter(Boolean).length;
+      const suffixWords=lower.slice(emb).trim().split(/\s+/).filter(Boolean).length;
+      if(prefixWords>=2 && suffixWords>=3) return true;
+    }
+  }
   return false;
 }
 function shouldTriggerAiFalseNegativeSide(text, localIsQ){
@@ -1060,7 +1094,7 @@ function shouldTriggerAiFalseNegativeSide(text, localIsQ){
 function shouldTriggerAiDetectSide(text, localIsQ){ return shouldTriggerAiSplitSide(text) || shouldTriggerAiFalseNegativeSide(text, localIsQ); }
 function buildAiDetectPromptSide(text){
   const safe=sanitizePromptContext(String(text||'').slice(0,800));
-  const prompt=`You are a question extractor for live English meeting transcripts.\n\nTask: Given a transcript block, extract all distinct questions. Return JSON only.\n\nInput block: """${safe}"""\n\nRules:\n- Split on missing punctuation too (e.g. "Where are you from where were you born" -> 2 questions).\n- Keep each question as a complete sentence (3-20 words), without trailing "?".\n- If block has no question, return empty array.\n- If block has 1 question, return array with 1 element.\n- If block has 2-4 questions, return each as separate element.\n- Do NOT hallucinate: only use words from input block.\n\nOutput ONLY JSON: {"questions":["question 1","question 2"]}`;
+  const prompt=`You are a question extractor for live English meeting transcripts.\n\nTask: Given a transcript block, extract all distinct questions. Return JSON only.\n\nInput block: """${safe}"""\n\nRules:\n- Split on missing punctuation too (e.g. "Where are you from where were you born" -> 2 questions).\n- Extract ONLY the question part, exclude declarative statements. Example: "Four of us do you have any siblings" -> ["do you have any siblings"] (exclude "Four of us").\n- Keep each question as a complete sentence (3-20 words), without trailing "?".\n- If block has no question, return empty array.\n- If block has 1 question, return array with 1 element.\n- If block has 2-4 questions, return each as separate element.\n- Do NOT hallucinate: only use words from input block.\n\nOutput ONLY JSON: {"questions":["question 1","question 2"]}`;
   const systemPrompt='You are a precise question extractor. Output ONLY JSON with "questions" array. No markdown.';
   return {prompt, systemPrompt};
 }
@@ -1073,9 +1107,12 @@ function parseAiDetectResponseSide(raw){
 function validateAiQuestionsSide(original, questions){
   if(!Array.isArray(questions)||questions.length===0) return [];
   const origLower=String(original||'').toLowerCase(); const origWords=new Set(origLower.split(/\s+/).filter(Boolean)); const out=[];
-  for(const q of questions){ const t=String(q).trim(); if(!t||t.length<5||t.length>250) continue; const qWords=t.toLowerCase().split(/\s+/).filter(Boolean); let hit=0; for(const w of qWords) if(origWords.has(w)) hit++; if(qWords.length>=3 && hit/qWords.length<0.5) continue; if(out.includes(t)) continue; out.push(t); }
-  if(out.length>=2){ const joinedLen=out.join(' ').length; const origLen=String(original).trim().length; if(joinedLen<origLen*0.5||joinedLen>origLen*1.4) return []; }
-  return out.slice(0,4);
+  for(const q of questions){ const t=String(q).trim(); if(!t||t.length<5||t.length>250) continue; if(!isQuestion(t) && t.split(/\s+/).filter(Boolean).length <6){ if(!/\b(do you|are you|is there|can you|could you|will you|have you|where|what|how|who|when|why)\b/i.test(t)) continue; } const qWords=t.toLowerCase().split(/\s+/).filter(Boolean); let hit=0; for(const w of qWords) if(origWords.has(w)) hit++; if(qWords.length>=3 && hit/qWords.length<0.5) continue; if(out.includes(t)) continue; out.push(t); }
+  const hasRealQ=out.some(q=> isQuestion(q));
+  let filtered=hasRealQ ? out.filter(q=> isQuestion(q) || q.split(/\s+/).length >=5) : out;
+  if(filtered.length>=2){ const joinedLen=filtered.join(' ').length; const origLen=String(original).trim().length; if(joinedLen<origLen*0.4||joinedLen>origLen*1.5){ const best=filtered.find(q=> isQuestion(q)); return best ? [best] : []; } }
+  if(filtered.length===1 && String(original).trim().length > filtered[0].length +8){ if(!isQuestion(filtered[0])) return []; }
+  return filtered.slice(0,4);
 }
 async function detectQuestionsViaAiSide(text){
   const t=String(text||'').trim(); if(!t) return [];
@@ -1154,9 +1191,40 @@ async function handleAiVerifyForIndexSide(idx, originalText){
       const q=qs[0]; if(q&&q.length>=5) { triggerSuggestForIndex(idx,q); const cc=utteranceDomCache[idx]; if(cc&&cc.root) cc.root.classList.add('question'); }
       return;
     }
+    // declarative+question: AI extracted pure question shorter than original (e.g. "Four of us do you have any siblings" -> ["do you have any siblings"])
+    if(qs.length===1 && localIsQ && isQuestion(qs[0]) && originalText.length > qs[0].length + 8){
+      const q=qs[0];
+      const lowerOrig=originalText.toLowerCase();
+      const lowerQ=q.toLowerCase();
+      let start=lowerOrig.indexOf(lowerQ);
+      if(start===-1){
+        const fw=lowerQ.split(/\s+/).slice(0,2).join(' ');
+        start=lowerOrig.indexOf(fw);
+      }
+      if(start>4){
+        const prefix=originalText.slice(0,start).trim().replace(/,\s*$/,'').replace(/^,\s*/,'');
+        if(prefix && prefix.split(/\s+/).length>=2 && prefix.length>=4){
+          await splitUtteranceAtSide(idx, [prefix, q]);
+          return;
+        }
+      }
+    }
     if(qs.length>=2){
       const validQs=qs.filter(q=> isQuestion(q) || q.split(/\s+/).filter(Boolean).length>=4 );
       if(validQs.length>=2) await splitUtteranceAtSide(idx, validQs);
+    }
+    // single pure question extraction for declarative+question where qs contains only question
+    if(qs.length===1 && isQuestion(qs[0]) && originalText.length > qs[0].length + 10){
+      const q=qs[0];
+      const lowerOrig=originalText.toLowerCase();
+      const lowerQ=q.toLowerCase();
+      let start=lowerOrig.indexOf(lowerQ);
+      if(start>6){
+        const prefix=originalText.slice(0,start).trim().replace(/,\s*$/,'');
+        if(prefix && prefix.split(/\s+/).length>=2){
+          await splitUtteranceAtSide(idx, [prefix, q]);
+        }
+      }
     }
   }catch(e){ console.warn('[aiDetect]',e&&e.message||e); }
 }
@@ -1694,6 +1762,23 @@ function normalizeForSplit(text){
   return s;
 }
 const RE_DECLARATIVE_START_SIDE = /^(i'm|i am|i was|my name|i was born|today|now|then|here|my|our|your|i've|we're|they're|i)\b/i;
+const RE_WH_SUBORDINATE_SIDE = /^(who|what|when|where|why|how|which|whom|whose|whether)\s+(someone|somebody|something|somewhere|anyone|anybody|anything|everyone|everybody|people|they|he|she|it|we|you|one)\s+(is|are|was|were|will|would|can|could|should|have|has|had|be|been)\b/i;
+const RE_IMPERATIVE_DO_SIDE = /^(do|does|did)\s+(this|that|these|those|it)\b/i;
+function isQuestionForSplitSide(s){
+  const t=String(s||'').trim(); if(!t) return false; if(t.includes('?')) return true;
+  const lower=t.toLowerCase(); const words=lower.split(/\s+/).filter(Boolean); if(words.length<3) return false;
+  if(/\b(to|for|with|of|in|on|at|a|an|the)\s*$/i.test(t)) return false;
+  if(RE_WH_SUBORDINATE_SIDE.test(t)) return false;
+  if(RE_IMPERATIVE_DO_SIDE.test(t) && !/\b(you|we|they|he|she)\b/i.test(t.split(/\s+/).slice(0,4).join(' '))) return false;
+  if(/^(who|what|when|where|why|how|which|whom|whose|whether|what's|how's|where's|when's|who's|why's)\b/i.test(t) && !RE_WH_SUBORDINATE_SIDE.test(t)) return true;
+  if(/^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody|this|that|these|those)\b/i.test(t)){
+    const aux=t.split(/\s+/)[0].toLowerCase(); const isDo=/^(do|does|did)\b/i.test(aux);
+    if(isDo && /^(do|does|did)\s+(this|that|these|those|it)\b/i.test(t) && !/\b(you|we|they|he|she|i)\b/i.test(t.toLowerCase())) return false;
+    return true;
+  }
+  if(/\b(do you|does he|does she|do they|did you|are you|is he|is she|are they|is there|are there|can you|could you|would you|will you|have you|has anyone|do you have|are you going|have you ever|would you like)\b/i.test(lower) && words.length>=4) return true;
+  return false;
+}
 function isNoiseUtteranceSide(s){
   const t=s.trim();
   if(!t) return true;
@@ -1716,9 +1801,25 @@ function findQuestionDeclarativeSplitSide(seg){
     const left=words.slice(0,i).join(' ');
     const right=words.slice(i).join(' ');
     if(left.split(/\s+/).length<3 || right.split(/\s+/).length<2) continue;
-    const leftIsQ=RE_Q_START_SIDE.test(left);
-    if(!leftIsQ) continue;
+    if(!RE_Q_START_SIDE.test(left) || !isQuestionForSplitSide(left)) continue;
     if(!RE_DECLARATIVE_START_SIDE.test(right)) continue;
+    return charPos[i];
+  }
+  return -1;
+}
+function findDeclarativeQuestionSplitSide(seg){
+  const words=seg.split(/\s+/);
+  if(words.length<6) return -1;
+  const segWords=seg.split(/\s+/);
+  const charPos=[0]; let p=0;
+  for(let wi=0;wi<segWords.length;wi++){ p+=segWords[wi].length+1; charPos.push(p); }
+  for(let i=3;i<=words.length-3;i++){
+    const left=words.slice(0,i).join(' ');
+    const right=words.slice(i).join(' ');
+    if(left.split(/\s+/).length<3 || right.split(/\s+/).length<3) continue;
+    if(isQuestionForSplitSide(left)) continue;
+    if(!isQuestionForSplitSide(right)) continue;
+    if(!RE_Q_START_SIDE.test(right)) continue;
     return charPos[i];
   }
   return -1;
@@ -1755,21 +1856,44 @@ function splitIntoUtterances(text) {
         const right=cur.slice(qdIdx).trim().replace(/^,\s*/,'');
         if(left && right && right.split(/\s+/).length>=2 && left.split(/\s+/).length>=2){ queue.unshift(right); segOut.push(left); continue; }
       }
+      const dqIdx=findDeclarativeQuestionSplitSide(cur);
+      if(dqIdx>0){
+        let left=cur.slice(0,dqIdx).trim().replace(/,\s*$/,'');
+        const right=cur.slice(dqIdx).trim().replace(/^,\s*/,'');
+        if(left && right && right.split(/\s+/).length>=3 && left.split(/\s+/).length>=2){ queue.unshift(right); segOut.push(left); continue; }
+      }
       const lower=cur.toLowerCase();
       let splitPos=-1;
-      for(const word of STRONG_SPLIT_WORDS){
-        const re=new RegExp(`\\b${word}\\b`,'i');
-        const m=re.exec(cur);
-        if(m && m.index>0){
-          const prefix=cur.slice(0,m.index).trim();
-          const cnt=prefix?prefix.split(/\s+/).length:0;
-          if(cnt>=MIN_PREFIX_WORDS && (splitPos===-1 || m.index<splitPos)) splitPos=m.index;
+      const wordsAll=cur.split(/\s+/);
+      if(wordsAll.length>=6){
+        const wPos=[0]; let pp=0; for(let wi=0;wi<wordsAll.length;wi++){ pp+=wordsAll[wi].length+1; wPos.push(pp); }
+        for(let i=MIN_PREFIX_WORDS;i<=wordsAll.length-3;i++){
+          const right=wordsAll.slice(i).join(' '); const left=wordsAll.slice(0,i).join(' ');
+          if(left.split(/\s+/).length<MIN_PREFIX_WORDS) continue;
+          if(!isQuestionForSplitSide(right)) continue;
+          if(!RE_Q_START_SIDE.test(right)) continue;
+          splitPos=wPos[i]; break;
+        }
+      }
+      if(splitPos===-1){
+        for(const word of STRONG_SPLIT_WORDS){
+          const re=new RegExp(`\\b${word}\\b`,'i');
+          const m=re.exec(cur);
+          if(m && m.index>0){
+            const prefix=cur.slice(0,m.index).trim();
+            const suffix=cur.slice(m.index).trim();
+            const cnt=prefix?prefix.split(/\s+/).length:0;
+            if(cnt>=MIN_PREFIX_WORDS && isQuestionForSplitSide(suffix) && (splitPos===-1 || m.index<splitPos)) splitPos=m.index;
+          }
         }
       }
       if(splitPos===-1){
         for(const w of ['hows','whats','wheres','whos']){
           const idx=lower.indexOf(w+' ');
-          if(idx>0 && cur.slice(0,idx).trim().split(/\s+/).length>=MIN_PREFIX_WORDS){ splitPos=idx; break; }
+          if(idx>0){
+            const prefix=cur.slice(0,idx).trim(); const suffix=cur.slice(idx).trim();
+            if(prefix.split(/\s+/).length>=MIN_PREFIX_WORDS && isQuestionForSplitSide(suffix)){ splitPos=idx; break; }
+          }
         }
       }
       if(splitPos===-1 && cur.includes(',')){
