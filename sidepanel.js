@@ -343,6 +343,28 @@ function setupDockResizer() {
 /** Defer non-critical work to idle — keeps first paint <100ms */
 function onIdle(fn) { if ('requestIdleCallback' in window) requestIdleCallback(fn, { timeout: 1500 }); else setTimeout(fn, 50); }
 
+/** Lazy-load compromise NLP (343KB) only when needed — never blocks first paint */
+let _nlpLoadPromise = null;
+function ensureNlpLoaded() {
+  try {
+    if (typeof window !== 'undefined' && typeof window.nlp === 'function') return Promise.resolve(true);
+    if (_nlpLoadPromise) return _nlpLoadPromise;
+    _nlpLoadPromise = new Promise((resolve) => {
+      try {
+        const s = document.createElement('script');
+        s.src = 'lib/compromise.min.js';
+        s.defer = true;
+        s.onload = () => resolve(true);
+        s.onerror = () => resolve(false);
+        document.head.appendChild(s);
+        // safety timeout: never block UI on NLP
+        setTimeout(() => resolve(false), 8000);
+      } catch { resolve(false); }
+    });
+    return _nlpLoadPromise;
+  } catch { return Promise.resolve(false); }
+}
+
 // Initialize — critical first, non-critical idle, no blocking
 document.addEventListener('DOMContentLoaded', async () => {
   performance.mark('sidepanel-dom-ready');
@@ -354,7 +376,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await checkAndHidePermissionOverlay();
     updateWordCounts(); updateDock();
     performance.mark('sidepanel-critical-ready');
-    try { performance.measure('sidepanel-critical', 'sidepanel-html-start', 'sidepanel-critical-ready'); } catch {}
+    try { performance.measure('sidepanel-critical', 'sidepanel-js-start', 'sidepanel-critical-ready'); } catch {}
   } catch (err) { console.error('[init-critical]', err); showToast('Initialization error', 'error'); }
 
   // Non-critical — defer to idle so first paint not blocked by 343KB compromise / settings
@@ -364,7 +386,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       await Promise.all([loadCompressPref(), loadContextPrompt()]);
       updateCompressToggleUI(); updateDock(); updateContextInspector();
       performance.mark('sidepanel-ready');
-      try { performance.measure('sidepanel-full', 'sidepanel-html-start', 'sidepanel-ready'); const m = performance.getEntriesByName('sidepanel-full')[0]; if (m) console.log(`[perf] sidepanel full ${m.duration.toFixed(0)}ms`); } catch {}
+      try { performance.measure('sidepanel-full', 'sidepanel-js-start', 'sidepanel-ready'); const m = performance.getEntriesByName('sidepanel-full')[0]; if (m) console.log(`[perf] sidepanel full ${m.duration.toFixed(0)}ms`); } catch {}
+      // Preload NLP in background after UI is ready (non-blocking)
+      onIdle(() => { void ensureNlpLoaded(); });
     } catch (e) { console.warn('[init-idle]', e); }
   });
 });
@@ -580,6 +604,8 @@ function setupEventListeners() {
     const combined = `EN:\n${en}\n\nVI:\n${vi}`; void copyToClipboard(combined, 'copyAllBtn');
   });
   if (grantPermissionBtn) grantPermissionBtn.addEventListener('click', openPermissionTab);
+  const laterBtn = document.getElementById('permissionLaterBtn');
+  if (laterBtn) laterBtn.addEventListener('click', () => { if (permissionOverlay) permissionOverlay.style.display = 'none'; });
 
   if (transcriptContent) {
     let tick = false;
@@ -966,7 +992,7 @@ function isQuestion(text) {
   if (wc < 2) return false;
   if (/\b(to|for|with|of|in|on|at|a|an|the)\s*$/i.test(t)) return false;
 
-  // Library first (if loaded): compromise
+  // Library first (if loaded): compromise (lazy-loaded, never blocks UI)
   try {
     const nlpFn = (typeof window !== 'undefined' && window.nlp) ? window.nlp : (typeof self !== 'undefined' && self.nlp ? self.nlp : null);
     if (typeof nlpFn === 'function') {
@@ -980,6 +1006,9 @@ function isQuestion(text) {
       }
       // Fallback via terms: check if first term is WH or aux + inversion
       // we keep heuristic below even if nlp exists
+    } else {
+      // NLP not loaded yet — load in background for next questions (heuristics below still work now)
+      try { void ensureNlpLoaded(); } catch {}
     }
   } catch (_) {}
 

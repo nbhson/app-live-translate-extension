@@ -5,8 +5,19 @@ const ALLOWED_CAPTURE_SCHEMES = Object.freeze(['http:', 'https:']);
 const BLOCKED_HOSTS = Object.freeze(['chrome.google.com', 'chromewebstore.google.com', 'accounts.google.com']);
 function isBlockedHost(h) { const lh = String(h).toLowerCase(); return BLOCKED_HOSTS.some(b => lh===b || lh.endsWith('.'+b)); }
 
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
+});
+chrome.runtime.onStartup.addListener(() => {
+  chrome.sidePanel
+    .setPanelBehavior({ openPanelOnActionClick: true })
+    .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
+});
+// Set immediately for the running worker too (fast native open, no JS roundtrip)
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: false })
+  .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
 
 /** @param {chrome.tabs.Tab} tab @returns {boolean} */
@@ -17,10 +28,13 @@ function isCapturableTab(tab) {
   try { const u = new URL(s); if (!ALLOWED_CAPTURE_SCHEMES.includes(u.protocol)) return false; if (isBlockedHost(u.hostname)) return false; return true; } catch { return false; }
 }
 
+// openPanelOnActionClick:true lets Chrome open the panel natively (instant).
+// Keep a fallback: if Chrome ever delivers onClicked (e.g. old behavior),
+// ensure the panel opens for this window.
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab || typeof tab.windowId !== 'number') { console.warn('[onClicked] invalid tab', tab); return; }
   try { await chrome.sidePanel.open({ windowId: tab.windowId }); }
-  catch (error) { console.error('[onClicked] open', error); }
+  catch (error) { console.debug('[onClicked] open (native behavior likely already opened)', error); }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {

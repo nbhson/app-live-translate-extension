@@ -5,14 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="dark">
   <title>Live Translate (EN → VI)</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <!-- Fonts non-blocking: display=swap + print media trick -->
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-  <noscript><link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"></noscript>
+  <!-- No remote fonts: MV3 CSP + offline/slow network (Windows) would delay first paint.
+       System font stack in CSS covers Outfit/JetBrains Mono fallback. -->
   <link rel="stylesheet" href="sidepanel.css">
-  <!-- Early perf mark -->
-  <script>performance.mark('sidepanel-html-start')</script>
 </head>
 <body>
   <a href="#liveTabContent" class="skip-link">Skip to main content</a>
@@ -290,7 +285,7 @@
       <h3 id="perm-title">Microphone permission required</h3>
       <p>Allow microphone access for speech recognition. You can change this in Chrome settings.</p>
       <button class="btn btn-primary btn-block" id="grantPermissionBtn">Open permission page</button>
-      <button class="btn btn-ghost btn-block" onclick="document.getElementById('permissionOverlay').style.display='none'">Later</button>
+      <button class="btn btn-ghost btn-block" id="permissionLaterBtn">Later</button>
     </div>
   </div>
 
@@ -344,9 +339,7 @@
     </div>
   </div>
 
-  <!-- Defer heavy scripts: non-blocking first paint -->
-  <!-- compromise 343KB only needed for isQuestion NLP, defer + lazy -->
-  <script src="lib/compromise.min.js" defer></script>
+  <!-- compromise 343KB only needed for isQuestion NLP: lazy-loaded on demand by sidepanel.js, NOT here -->
   <script src="sidepanel.js" defer></script>
   <!-- ESM build dist/main.js loads on demand (idle), not auto-loaded to save 41KB
   <script type="module" src="dist/main.js" async></script> -->
