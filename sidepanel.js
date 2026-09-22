@@ -118,6 +118,49 @@ let suggestContextPrompt = State.suggestContextPrompt;
 let contextPromptSaveTimer = State.contextPromptSaveTimer;
 let isSuggestRunning = false;
 let wordCountDirty = false;
+/** Live sub-view: 'transcript' | 'answers' | 'context' — view-only, no transcript logic depends on it */
+let liveView = 'transcript';
+/**
+ * Switch live sub-view — guarded, no throw. Sections keep their IDs so all
+ * existing logic (dock render, inspector, compress) works in any view.
+ * @param {string} name
+ */
+function setLiveView(name) {
+  if (name !== 'transcript' && name !== 'answers' && name !== 'context') return;
+  liveView = name;
+  try {
+    const map = {
+      transcript: document.getElementById('transcriptSection'),
+      answers: document.getElementById('suggestionDock'),
+      context: document.getElementById('contextView'),
+    };
+    for (const k of Object.keys(map)) {
+      const el = map[k];
+      if (!el) continue;
+      const on = k === name;
+      el.classList.toggle('active', on);
+      el.setAttribute('aria-hidden', String(!on));
+    }
+    document.querySelectorAll('.live-switch-btn').forEach((b) => {
+      const on = b.dataset.liveview === name;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', String(on));
+    });
+    if (name === 'answers') {
+      const badge = document.getElementById('answersCountBadge');
+      if (badge) badge.classList.remove('ping');
+      if (suggestionBody) suggestionBody.scrollTop = 0;
+    }
+  } catch (e) { console.warn('[setLiveView]', e); }
+}
+/** Wire live sub-view switcher — guarded */
+function setupLiveView() {
+  try {
+    document.querySelectorAll('.live-switch-btn').forEach((b) => {
+      b.addEventListener('click', () => setLiveView(b.dataset.liveview));
+    });
+  } catch (e) { console.warn('[setupLiveView]', e); }
+}
 /** Sync legacy aliases back to State after mutations (called at end of mutating fns) */
 function syncState() {
   State.recognition = recognition; State.isListening = isListening; State.lastFinalIndex = lastFinalIndex;
@@ -370,7 +413,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   performance.mark('sidepanel-dom-ready');
   try {
     // Critical path — UI must be interactive immediately
-    setupEventListeners(); setupTabNavigation(); setupKeyboardShortcuts();
+    setupEventListeners(); setupTabNavigation(); setupKeyboardShortcuts(); setupLiveView();
     // Parallel critical storage (small)
     await Promise.all([loadProviderConfig(), loadSuggestPref()]);
     await checkAndHidePermissionOverlay();
@@ -659,7 +702,7 @@ async function startTabCapture() {
   const resp = await sendMessageAsync({ type: 'get-tab-stream-id' });
   if (!resp || resp.error || !resp.streamId) {
     const msg = resp && resp.error ? resp.error : 'No response from background';
-    console.error('[get-tab-stream-id]', msg); showStatus('Cannot capture this tab.'); showToast('Cannot capture tab — check tab is playing audio and extension icon was clicked', 'error');
+    console.error('[get-tab-stream-id]', msg); showStatus('Cannot capture this tab.'); showToast(`Cannot capture tab: ${String(msg).slice(0, 160)}`, 'error');
     if (audioSourceSelect) audioSourceSelect.value = 'mic'; return;
   }
   try {
@@ -674,7 +717,9 @@ async function startTabCapture() {
     setupSpeakerMonitor(stream);
     startListening();
   } catch (err) {
-    console.error('[startTabCapture]', err); showStatus('Tab audio connection error.'); showToast('Tab connection failed — switching to Microphone', 'error');
+    console.error('[startTabCapture]', err); showStatus('Tab audio connection error.');
+    const detail = err && err.name ? `${err.name}: ${err.message || ''}`.trim() : String(err);
+    showToast(`Tab audio failed (${detail.slice(0, 160)}) — switching to Microphone`, 'error');
     if (audioSourceSelect) audioSourceSelect.value = 'mic'; cleanupTabCapture();
     const granted = await checkMicPermission(); if (granted) startListening();
   }
@@ -1669,6 +1714,21 @@ function updateDock() {
   const entries = Object.entries(questionSuggestions).sort((a,b)=>Number(a[0])-Number(b[0]));
   const count = entries.length;
   if (qCountBadge) qCountBadge.textContent = `${count} questions`;
+  // Live switcher badge — ping when new questions arrive while user is elsewhere
+  try {
+    const answersBadge = document.getElementById('answersCountBadge');
+    if (answersBadge) {
+      if (count > 0) {
+        answersBadge.hidden = false;
+        answersBadge.textContent = count > 99 ? '99+' : String(count);
+        if (liveView !== 'answers') answersBadge.classList.add('ping');
+      } else {
+        answersBadge.hidden = true;
+        answersBadge.textContent = '';
+        answersBadge.classList.remove('ping');
+      }
+    }
+  } catch {}
   // pills
   if (questionPills) {
     questionPills.innerHTML = '';
@@ -3215,8 +3275,12 @@ function showToast(message, type = 'default') {
 
 /** Keyboard shortcuts — guarded, no repeat, ARIA */
 function setupKeyboardShortcuts() {
+  /** @param {EventTarget|null} t */
+  const isTypingTarget = (t) => {
+    try { return !!(t instanceof Element && t.matches('input, textarea, select')); } catch { return false; }
+  };
   document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && !e.target.matches('input, textarea, select')) {
+    if (e.code === 'Space' && !isTypingTarget(e.target)) {
       e.preventDefault();
       toggleListening();
     }
@@ -3228,6 +3292,14 @@ function setupKeyboardShortcuts() {
     if (e.key === 'Escape') {
       if (settingsOverlay) settingsOverlay.style.display = 'none';
       if (permissionOverlay) permissionOverlay.style.display = 'none';
+    }
+    // Live sub-view shortcuts: 1/2/3 → Transcript/Answers/Context (live tab only, not while typing)
+    if ((e.key === '1' || e.key === '2' || e.key === '3') && !e.ctrlKey && !e.metaKey && !e.altKey
+        && !isTypingTarget(e.target)
+        && typeof liveTabContent !== 'undefined' && liveTabContent
+        && liveTabContent.classList.contains('active-tab-content')) {
+      e.preventDefault();
+      setLiveView(e.key === '1' ? 'transcript' : e.key === '2' ? 'answers' : 'context');
     }
   });
   // ARIA tab handling

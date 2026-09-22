@@ -42,12 +42,15 @@ body {
   background: var(--bg);
   color: var(--text);
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  overflow: clip;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   line-height: 1.5;
+  min-width: 0;
 }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .skip-link {
@@ -452,6 +455,9 @@ body {
 }
 .panel-card-title { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-2); }
 .panel-card-title svg { width: 14px; height: 14px; fill: var(--primary-2); }
+/* Header icon + button icon của tab Summary (thiếu là phình to đen như bug đã gặp) */
+.doc-icon { width: 14px; height: 14px; fill: var(--primary-2); flex-shrink: 0; }
+.sparkle-icon { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
 .form-row { display: flex; gap: 10px; }
 .form-group { flex: 1; display: flex; flex-direction: column; gap: 6px; }
 .form-group label { font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.05em; }
@@ -723,25 +729,26 @@ body {
 #manualCompressBtn { border: 1px dashed rgba(251,191,36,0.25) !important; }
 #manualCompressBtn:hover { background: rgba(251,191,36,0.10) !important; color: #fbbf24 !important; }
 
-/* Context prompt for suggestion — collapsible to save dock space */
+/* Context prompt for suggestion — roomier, scannable */
 .context-prompt-wrap {
-  padding: 6px 10px;
-  border-bottom: 1px solid rgba(255,255,255,0.06);
-  background: rgba(251,191,36,0.04);
-  display: flex; flex-direction: column; gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(251,191,36,0.12);
+  background: rgba(251,191,36,0.05);
+  display: flex; flex-direction: column; gap: 8px;
   flex-shrink: 0;
 }
-.context-prompt-wrap.collapsed { padding: 4px 10px; }
+.context-prompt-wrap.collapsed { padding: 7px 12px; }
 .context-prompt-toggle {
-  width: 100%; display: flex; align-items: center; gap: 6px;
+  width: 100%; display: flex; align-items: center; gap: 8px;
   background: transparent; border: none; cursor: pointer;
-  font-size: 11px; font-weight: 700; color: #fbbf24; letter-spacing: 0.02em;
-  font-family: inherit; text-align: left; padding: 2px 0;
+  font-size: 12.5px; font-weight: 700; color: #fbbf24; letter-spacing: 0.02em;
+  font-family: inherit; text-align: left; padding: 4px 0; min-height: 32px;
 }
-.context-prompt-toggle .cp-icon { font-size: 12px; }
-.context-prompt-toggle .cp-chevron { margin-left: auto; font-size: 10px; color: var(--text-3); transition: transform 0.2s var(--ease); }
+.context-prompt-toggle .cp-icon { font-size: 14px; }
+.context-prompt-toggle .cp-chevron { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--text-2); transition: transform 0.2s var(--ease); flex-shrink: 0; }
+.context-prompt-toggle:hover .cp-chevron { color: #fbbf24; }
 .context-prompt-wrap:not(.collapsed) .cp-chevron { transform: rotate(90deg); }
-.context-prompt-collapsible { display: flex; flex-direction: column; gap: 6px; }
+.context-prompt-collapsible { display: flex; flex-direction: column; gap: 8px; padding-bottom: 2px; }
 .context-prompt-wrap.collapsed .context-prompt-collapsible { display: none; }
 .context-prompt-label {
   display: flex; align-items: center; gap: 6px;
@@ -749,17 +756,17 @@ body {
 }
 .context-prompt-label .cp-icon { font-size: 12px; }
 .context-prompt-badge {
-  font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
   background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.25); color: #10b981;
-  margin-left: auto;
+  margin-left: auto; white-space: nowrap;
 }
 .context-prompt-row {
-  display: flex; gap: 6px; align-items: flex-start;
+  display: flex; gap: 8px; align-items: stretch;
 }
 .context-prompt-input {
-  flex: 1; min-height: 38px; max-height: 72px; resize: vertical;
-  background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text);
-  padding: 7px 10px; border-radius: 9px; font-family: inherit; font-size: 12.5px; line-height: 1.45;
+  flex: 1; min-height: 56px; max-height: 120px; resize: vertical;
+  background: rgba(0,0,0,0.25); border: 1px solid var(--border-strong); color: var(--text);
+  padding: 9px 12px; border-radius: 10px; font-family: inherit; font-size: 13px; line-height: 1.55;
   outline: none; transition: all 0.2s var(--ease);
 }
 .context-prompt-input::placeholder { color: var(--text-3); font-style: italic; }
@@ -767,16 +774,15 @@ body {
 .context-prompt-input:focus { background: rgba(255,255,255,0.07); border-color: rgba(251,191,36,0.35); box-shadow: 0 0 0 3px rgba(251,191,36,0.12); }
 .context-prompt-input.has-value { border-color: rgba(251,191,36,0.25); background: rgba(251,191,36,0.06); }
 .context-clear-btn {
-  width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center;
+  width: 36px; height: auto; min-height: 40px; align-self: stretch; flex-shrink: 0; display: grid; place-items: center;
   background: rgba(255,255,255,0.04); border: 1px solid var(--border); color: var(--text-3);
-  border-radius: 8px; cursor: pointer; font-size: 12px; transition: all 0.18s var(--ease);
-  margin-top: 4px;
+  border-radius: 10px; cursor: pointer; font-size: 13px; transition: all 0.18s var(--ease);
 }
 .context-clear-btn:hover { background: rgba(255,255,255,0.08); color: var(--text); border-color: var(--border-strong); }
 .context-clear-btn:active { transform: scale(0.95); }
-.context-prompt-hint { font-size: 10px; color: var(--text-3); line-height: 1.3; }
+.context-prompt-hint { font-size: 11px; color: var(--text-2); line-height: 1.45; }
 
-/* Context Inspector */
+/* Context Inspector — readable at a glance */
 .context-inspector {
   border-bottom: 1px solid rgba(255,255,255,0.06);
   background: rgba(255,255,255,0.02);
@@ -784,24 +790,40 @@ body {
 }
 .inspector-header {
   width: 100%; display: flex; align-items: center; gap: 8px;
-  padding: 7px 10px; background: transparent; border: none; cursor: pointer;
+  padding: 10px 12px; min-height: 44px; background: transparent; border: none; cursor: pointer;
   font-family: inherit; text-align: left; transition: background 0.15s;
 }
 .inspector-header:hover { background: rgba(255,255,255,0.04); }
-.inspector-title { font-size: 11px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.02em; }
-.inspector-meta { flex: 1; font-size: 10px; color: var(--text-3); font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
-.inspector-chevron { font-size: 11px; color: var(--text-3); transition: transform 0.2s var(--ease); }
+.inspector-title { font-size: 12.5px; font-weight: 700; color: #e2e8f0; letter-spacing: 0.02em; white-space: nowrap; }
+.inspector-meta {
+  flex: 1; font-size: 11px; line-height: 1.5; color: var(--text-2); font-family: var(--mono);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; text-align: right; min-width: 0;
+}
+.inspector-chevron { font-size: 13px; font-weight: 700; color: var(--text-2); transition: transform 0.2s var(--ease); flex-shrink: 0; }
+.inspector-header:hover .inspector-chevron { color: var(--text); }
 .inspector-header[aria-expanded="true"] .inspector-chevron { transform: rotate(90deg); }
-.inspector-body { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
-.inspector-tabs { display: flex; gap: 4px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 999px; padding: 2px; width: fit-content; }
-.inspector-tab { font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 999px; background: transparent; border: none; color: var(--text-3); cursor: pointer; font-family: inherit; }
+.inspector-body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+.inspector-tabs {
+  display: flex; gap: 4px; align-self: flex-start; max-width: 100%; overflow-x: auto; scrollbar-width: none;
+  background: rgba(255,255,255,0.04); border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px;
+}
+.inspector-tabs::-webkit-scrollbar { display: none; }
+.inspector-tab { font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: transparent; border: none; color: var(--text-3); cursor: pointer; font-family: inherit; white-space: nowrap; flex-shrink: 0; }
 .inspector-tab.active { background: #fff; color: #0a0a0a; }
-.inspector-pane { font-size: 11.5px; line-height: 1.5; color: var(--text-2); background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 8px; padding: 8px; max-height: 140px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-family: var(--mono); }
+.inspector-pane {
+  font-size: 12.5px; line-height: 1.7; color: #cbd5e1;
+  background: rgba(0,0,0,0.35); border: 1px solid var(--border-strong); border-radius: 10px;
+  padding: 10px 12px; max-height: 180px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word; font-family: var(--mono);
+}
+.inspector-header[aria-expanded="true"] + .inspector-body .inspector-pane { max-height: 240px; }
 .inspector-pane:empty::before { content: '(empty)'; color: var(--text-3); font-style: italic; }
-.inspector-actions { display: flex; align-items: center; gap: 8px; }
-.inspector-copy-btn { font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text-2); cursor: pointer; font-family: inherit; }
+.inspector-actions { display: flex; align-items: flex-start; gap: 8px; }
+.inspector-copy-btn { font-size: 12px; font-weight: 600; padding: 7px 12px; min-height: 34px; border-radius: 8px; background: rgba(255,255,255,0.06); border: 1px solid var(--border); color: var(--text-2); cursor: pointer; font-family: inherit; flex-shrink: 0; }
 .inspector-copy-btn:hover { background: rgba(255,255,255,0.10); color: var(--text); }
-.inspector-hint { font-size: 10px; color: var(--text-3); line-height: 1.3; }
+.inspector-hint { font-size: 10.5px; color: var(--text-3); line-height: 1.45; }
 
 /* Small height */
 @media (max-height: 600px) {
@@ -809,4 +831,190 @@ body {
   .panel-content { font-size: 13.5px; }
   .suggestion-dock { min-height: 160px; max-height: 50%; }
   .suggestion-dock.expanded { max-height: 68%; }
+}
+
+/* ============================================================
+   Responsive system v3 — panel-first (narrow default, wide aware).
+   Áp dụng chung cho cả 2 tab để đồng bộ.
+   ============================================================ */
+
+/* 0) Overflow guards — live tab co được, text dài tự ellipsis/wrap */
+.app-header,
+.control-bar,
+.tabs-nav,
+.app-footer,
+.panel-header, .panel-title,
+.panel-actions, .dock-header, .dock-header-actions, .dock-tabs,
+.question-pills { min-width: 0; }
+.brand,
+.title-area,
+.footer-status { min-width: 0; overflow: hidden; }
+.title-area h1,
+.dock-title, .q-count {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.panel-content, .suggestion-body, .transcript-feed, .utterance-body,
+.utterance-en-text, .utterance-vi-text, .dock-complete-card .answer-text { overflow-wrap: anywhere; }
+img, svg, video { max-width: 100%; }
+
+/* Fluid type theo chiều rộng panel — live tab only */
+#liveTabContent .panel-content { font-size: clamp(13px, 3.9vw + 8px, 14.5px); }
+.dock-complete-card { font-size: clamp(12.5px, 3.4vw + 8px, 13.5px); }
+
+/* 1) Control bar: wrap mượt ở mọi chiều rộng, nút chính không bị đè */
+.control-bar { flex-wrap: wrap; row-gap: 8px; }
+.source-select-wrap { flex: 1 1 132px; min-width: 0; max-width: 160px; }
+.btn-record { flex: 1 1 148px; min-width: 0; }
+#clearBtn { flex: 0 1 auto; }
+
+/* 2) Panel header: tiêu đề + actions tự xuống dòng, pills cuộn ngang khi chật */
+.panel-header { flex-wrap: wrap; row-gap: 6px; }
+.panel-title { flex: 1 1 auto; flex-wrap: wrap; row-gap: 4px; }
+.panel-actions {
+  flex: 1 1 auto; flex-wrap: wrap; row-gap: 6px;
+  justify-content: flex-end; max-width: 100%;
+}
+.suggest-toggle-wrap, .compress-toggle-wrap, .auto-badge, .copy-pill-btn { flex-shrink: 0; }
+.copy-pill-btn { min-height: 30px; }
+
+/* 3) Dock header/tabs: không vỡ khi panel hẹp */
+.dock-header { flex-wrap: wrap; row-gap: 6px; }
+.dock-header-actions { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; row-gap: 6px; justify-content: flex-end; }
+.dock-tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.dock-tabs::-webkit-scrollbar { display: none; }
+.dock-tab { flex-shrink: 0; }
+.question-pills { flex-wrap: nowrap; }
+.context-prompt-row { flex-wrap: wrap; }
+.context-prompt-input { flex: 1 1 180px; min-width: 0; }
+
+/* 4) Footer + settings: wrap an toàn */
+.app-footer { flex-wrap: wrap; row-gap: 4px; height: auto; min-height: 40px; padding-top: 6px; padding-bottom: 6px; }
+.footer-status { flex: 1 1 auto; }
+.settings-card { width: min(360px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.overlay { padding: 12px; }
+.toast-container { max-width: calc(100vw - 24px); }
+
+/* 5) Panel rất hẹp (<=360px): gọn header, giấu hint phím, ưu tiên nút Start.
+   Shared chrome áp dụng chung cho cả 2 tab. */
+@media (max-width: 360px) {
+  .app-header { padding: 0 10px; }
+  .title-area .subtitle { display: none; }
+  .live-badge { padding: 4px 8px; font-size: 10px; }
+  .control-bar { padding: 8px 10px; gap: 6px; }
+  .source-select-wrap { flex: 1 1 100%; max-width: 100%; }
+  .btn-record { flex: 1 1 100%; min-width: 0; }
+  #clearBtn { flex: 1 1 100%; }
+  .kbd-hint { display: none; }
+  #liveTabContent .panel-section { padding: 8px 10px 6px; }
+  .panel-subtitle, .flag-icon { display: none; }
+  .auto-badge { display: none; }
+  .copy-pill-btn svg { display: none; }
+  .copy-pill-btn { padding: 5px 8px; }
+  .suggest-toggle-label { font-size: 10px; }
+  .compress-toggle-wrap span:last-of-type { display: none; }
+  .dock-header { padding: 6px 8px 4px; }
+  .question-pills { padding: 6px 8px 4px; }
+  .suggestion-body { padding: 6px 8px 8px; }
+  .placeholder-hints { flex-wrap: wrap; justify-content: center; }
+}
+
+/* 6) Panel siêu hẹp (<=300px): xếp tầng gọn */
+@media (max-width: 300px) {
+  .brand { gap: 8px; }
+  .logo-wrap { width: 28px; height: 28px; }
+  .title-area h1 { font-size: 13px; }
+  .tab-btn { font-size: 12px; }
+  .tab-btn .tab-icon { display: none; }
+  .word-count { display: none; }
+  .suggestion-dock { min-height: 150px; max-height: 46%; }
+  .inspector-header { flex-wrap: wrap; row-gap: 2px; }
+  .inspector-meta { flex: 1 1 100%; text-align: left; font-size: 10.5px; }
+}
+
+/* 7) Panel cao-thấp: chiều cao quyết định dock */
+@media (max-height: 560px) {
+  .app-header { height: 48px; }
+  .tabs-nav { height: 38px; }
+  #liveTabContent .placeholder-text { min-height: 64px; padding: 12px; gap: 6px; }
+  #liveTabContent .placeholder-illust { width: 38px; height: 38px; font-size: 22px; }
+  #liveTabContent .placeholder-desc { display: none; }
+  .suggestion-dock { min-height: 132px; max-height: 44%; }
+  .context-prompt-wrap { display: none; }
+}
+@media (min-height: 800px) {
+  .suggestion-dock { max-height: 52%; }
+  #liveTabContent .panel-content { line-height: 1.75; }
+}
+
+/* 8) Panel rộng (>=560px): 2 cột transcript | suggestions — hết phí không gian */
+@media (min-width: 560px) {
+  .split-layout.tab-content.active-tab-content { flex-direction: row; align-items: stretch; }
+  #transcriptSection { flex: 1 1 55%; min-width: 0; border-bottom: none; }
+  .dock-resizer { display: none; }
+  .suggestion-dock {
+    flex: 1 1 45%; min-width: 250px; max-height: none; min-height: 0;
+    border-top: none; border-left: 1px solid #1f1f1f; height: auto;
+  }
+  .suggestion-dock.expanded { max-height: none; }
+  .control-bar { gap: 10px; }
+  .source-select-wrap { max-width: 200px; }
+  #liveTabContent .panel-content { font-size: 14.5px; }
+
+  /* -- Wide polish: header thoáng 2 hàng, dock có hierarchy rõ -- */
+  /* Transcript: tiêu đề 1 hàng, actions xuống hàng 2 căn trái */
+  #transcriptSection .panel-header { align-items: flex-start; row-gap: 8px; }
+  #transcriptSection .panel-title { flex-basis: 100%; }
+  #transcriptSection .panel-actions { flex-basis: 100%; justify-content: flex-start; }
+  /* Dock header: xếp tầng — tiêu đề / tabs riêng hàng */
+  .dock-header { flex-direction: column; align-items: stretch; padding: 10px 12px 8px; }
+  .dock-title { font-size: 13px; }
+  .dock-header-actions { justify-content: flex-start; }
+  .dock-expand-btn { order: -1; }
+  /* Tabs dock: bỏ pill bọc ngoài, mỗi tab là 1 pill riêng, tự wrap */
+  .dock-tabs {
+    background: transparent; border: none; padding: 0;
+    flex-wrap: wrap; overflow: visible; row-gap: 6px;
+  }
+  .dock-tab { border: 1px solid var(--border); background: rgba(255,255,255,0.04); padding: 6px 12px; }
+  .dock-tab.active { background: #fff; border-color: #fff; color: #0a0a0a; }
+  .dock-tab.ghost { border-style: dashed; }
+  /* Active Context: meta xuống dòng, căn trái — hết wrap lệch */
+  .inspector-header { flex-wrap: wrap; row-gap: 2px; }
+  .inspector-meta { flex: 1 1 100%; text-align: left; }
+  /* Empty state không giãn hết cột rộng */
+  .suggest-empty { max-width: 360px; margin: 12px auto; }
+  #liveTabContent .placeholder-desc { max-width: 300px; }
+}
+/* Rộng hẳn (>=860px): dock thoáng hơn, cards 2 cột nhẹ */
+@media (min-width: 860px) {
+  #transcriptSection { flex-basis: 58%; }
+  .suggestion-dock { flex-basis: 42%; }
+  .suggestion-body { display: grid; grid-template-columns: 1fr; gap: 12px; align-content: start; }
+  .dock-complete-card { font-size: 14px; }
+}
+
+/* 9) Cảm ứng: mục tiêu chạm đủ lớn (nút dùng chung chỉ khi live active) */
+@media (pointer: coarse) {
+  .btn,
+  .tab-btn,
+  .dock-tab, .q-pill, .copy-pill-btn, .inspector-tab,
+  .preset-chip,
+  .copy-mini-btn,
+  .dock-expand-btn,
+  .btn-close {
+    min-height: 40px;
+  }
+  .copy-mini-btn, .suggest-actions button { min-width: 40px; }
+  .utterance-copy-row { opacity: 1; }
+}
+@media (hover: none) {
+  .btn-primary:hover,
+  .btn-danger:hover,
+  .btn-ghost:hover,
+  .copy-pill-btn:hover, .q-pill:hover:not(.active) { transform: none; }
+}
+
+/* 10) Màn hình mật độ cao / zoom chữ lớn: không vỡ layout */
+@media (min-resolution: 2dppx) {
+  #liveTabContent .panel-content, .suggestion-body, .inspector-pane { text-rendering: optimizeLegibility; }
 }

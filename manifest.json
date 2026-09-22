@@ -3,7 +3,7 @@
   "name": "Live Translate (EN -> VI)",
   "version": "1.0.1",
   "description": "Real-time speech-to-text English transcription and translation into Vietnamese in Chrome Side Panel.",
-  "permissions": ["sidePanel", "activeTab", "storage", "tabCapture"],
+  "permissions": ["sidePanel", "activeTab", "tabs", "storage", "tabCapture"],
   "host_permissions": [
     "https://translate.googleapis.com/*",
     "https://generativelanguage.googleapis.com/*",

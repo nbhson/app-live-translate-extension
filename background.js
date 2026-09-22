@@ -7,17 +7,17 @@ function isBlockedHost(h) { const lh = String(h).toLowerCase(); return BLOCKED_H
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
+    .setPanelBehavior({ openPanelOnActionClick: false })
     .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
 });
 chrome.runtime.onStartup.addListener(() => {
   chrome.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
+    .setPanelBehavior({ openPanelOnActionClick: false })
     .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
 });
-// Set immediately for the running worker too (fast native open, no JS roundtrip)
+// Set immediately for the running worker too.
 chrome.sidePanel
-  .setPanelBehavior({ openPanelOnActionClick: true })
+  .setPanelBehavior({ openPanelOnActionClick: false })
   .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
 
 /** @param {chrome.tabs.Tab} tab @returns {boolean} */
@@ -28,13 +28,16 @@ function isCapturableTab(tab) {
   try { const u = new URL(s); if (!ALLOWED_CAPTURE_SCHEMES.includes(u.protocol)) return false; if (isBlockedHost(u.hostname)) return false; return true; } catch { return false; }
 }
 
-// openPanelOnActionClick:true lets Chrome open the panel natively (instant).
-// Keep a fallback: if Chrome ever delivers onClicked (e.g. old behavior),
-// ensure the panel opens for this window.
+// Manual open on action click (primary path, NOT fallback):
+// the onClicked dispatch carries the user gesture that grants activeTab,
+// which chrome.tabCapture.getMediaStreamId REQUIRES
+// ("Extension has not been invoked" otherwise).
+// Native open (openPanelOnActionClick:true) is faster but skips the grant
+// and breaks tab audio — do NOT switch back without a host-permission flow.
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab || typeof tab.windowId !== 'number') { console.warn('[onClicked] invalid tab', tab); return; }
   try { await chrome.sidePanel.open({ windowId: tab.windowId }); }
-  catch (error) { console.debug('[onClicked] open (native behavior likely already opened)', error); }
+  catch (error) { console.error('[onClicked] open', error); }
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -44,7 +47,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
       const activeTab = tabs && tabs[0];
       if (!activeTab) { sendResponse({ error: 'No active tab found.' }); return; }
-      if (!isCapturableTab(activeTab)) { sendResponse({ error: `Tab does not support capture: ${activeTab.url}` }); return; }
+      if (!isCapturableTab(activeTab)) {
+        const reason = (activeTab && !activeTab.url)
+          ? 'missing tab URL — reload the extension and click its icon on this tab to grant access'
+          : String(activeTab.url);
+        sendResponse({ error: `Tab does not support capture: ${reason}` }); return;
+      }
       chrome.tabCapture.getMediaStreamId({ targetTabId: activeTab.id }, (streamId) => {
         if (chrome.runtime.lastError) { console.error('[getMediaStreamId]', chrome.runtime.lastError.message); sendResponse({ error: chrome.runtime.lastError.message }); }
         else if (!streamId || typeof streamId !== 'string') sendResponse({ error: 'Failed to get streamId' });

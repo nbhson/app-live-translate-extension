@@ -8,6 +8,7 @@
   <!-- No remote fonts: MV3 CSP + offline/slow network (Windows) would delay first paint.
        System font stack in CSS covers Outfit/JetBrains Mono fallback. -->
   <link rel="stylesheet" href="sidepanel.css">
+  <link rel="stylesheet" href="live-new.css">
 </head>
 <body>
   <a href="#liveTabContent" class="skip-link">Skip to main content</a>
@@ -52,9 +53,8 @@
       <span class="kbd-hint" aria-hidden="true">SPACE</span>
     </button>
 
-    <button id="clearBtn" class="btn btn-ghost" title="Clear content (Ctrl+K)" aria-label="Clear all content">
+    <button id="clearBtn" class="btn btn-ghost btn-clear" title="Clear content (Ctrl+K)" aria-label="Clear all content">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4V3H9v1H4v2h16V4zM6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h2v10H8V9zm4 0h2v10h-2V9z"/></svg>
-      <span class="btn-label-sm">Clear</span>
     </button>
   </div>
 
@@ -72,30 +72,41 @@
     </button>
   </nav>
 
-  <!-- Tab 1: Live - Single block: EN on top, VI right below -->
+  <!-- Tab 1: Live - 3 switchable views: Transcript / Answers / Context -->
   <main class="split-layout tab-content active-tab-content" id="liveTabContent" role="tabpanel" aria-labelledby="tabLive">
-    <section class="panel-section single-block" id="transcriptSection" aria-labelledby="transcript-title">
+    <div class="live-switcher" role="tablist" aria-label="Live views">
+      <button id="liveViewTranscriptBtn" class="live-switch-btn active" role="tab" aria-selected="true" data-liveview="transcript">
+        <span>Transcript</span>
+      </button>
+      <button id="liveViewAnswersBtn" class="live-switch-btn" role="tab" aria-selected="false" data-liveview="answers">
+        <span>Answers</span><span class="live-switch-count" id="answersCountBadge" hidden></span>
+      </button>
+      <button id="liveViewContextBtn" class="live-switch-btn" role="tab" aria-selected="false" data-liveview="context">
+        <span>Context</span>
+      </button>
+    </div>
+    <section class="panel-section single-block live-view active" id="transcriptSection" aria-labelledby="transcript-title">
       <div class="panel-header">
         <div class="panel-title">
-          <span class="flag-icon" aria-hidden="true">🌐</span>
           <h2 id="transcript-title">Transcript</h2>
-          <span class="panel-subtitle">EN <span aria-hidden="true">→</span> VI</span>
           <span class="word-count" id="combinedWordCount" aria-live="polite">0 words</span>
           <span class="word-count" id="enWordCount" style="display:none">0 words</span>
           <span class="word-count" id="viWordCount" style="display:none">0 words</span>
         </div>
-        <div class="panel-actions">
-          <label class="suggest-toggle-wrap" title="Toggle AI suggested answers">
-            <input type="checkbox" id="suggestToggle" checked>
-            <span class="suggest-toggle-label">💡 AI</span>
-          </label>
-          <label class="suggest-toggle-wrap compress-toggle-wrap" title="Compress history every 5m with AI (save tokens, keep long context)">
-            <input type="checkbox" id="compressToggle">
-            <span>🗜️ Compress 5m</span>
-            <span id="compressBadge" class="compress-badge" style="display:none"></span>
-          </label>
-          <span class="auto-badge" title="Auto-translate via Google Translate">Auto</span>
-          <button id="copyEnBtn" class="copy-pill-btn copy-pill-en" title="Copy English" aria-label="Copy English">
+      </div>
+      <div class="transcript-toolbar" id="transcriptToolbar">
+        <label class="suggest-toggle-wrap" title="Toggle AI suggested answers">
+          <input type="checkbox" id="suggestToggle" checked>
+          <span class="suggest-toggle-label">💡 AI</span>
+        </label>
+        <label class="suggest-toggle-wrap compress-toggle-wrap" title="Compress history every 5m with AI (save tokens, keep long context)">
+          <input type="checkbox" id="compressToggle">
+          <span>🗜️ Compress 5m</span>
+          <span id="compressBadge" class="compress-badge" style="display:none"></span>
+        </label>
+        <span class="auto-badge" title="Auto-translate via Google Translate">Auto</span>
+        <span class="toolbar-spacer"></span>
+        <button id="copyEnBtn" class="copy-pill-btn copy-pill-en" title="Copy English" aria-label="Copy English">
             <span class="pill-label">EN</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
           </button>
@@ -108,7 +119,6 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 2H9c-1.1 0-2 .9-2 2v4H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4h4c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-2 12H9V4h8v10zm4 4h-4v-4h4v4z"/></svg>
           </button>
         </div>
-      </div>
       <div class="panel-content scrollable" id="transcriptContent" tabindex="0" aria-label="English transcript and Vietnamese translation">
         <div class="placeholder-text" id="combinedPlaceholder">
           <div class="placeholder-illust">🎤</div>
@@ -119,6 +129,11 @@
             <span class="hint-chip">🎙️ Micro</span>
           </div>
         </div>
+        <!-- Live caption hero: sticky current-speech caption -->
+        <div class="interim-block" id="interimBlock" style="display:none" aria-live="polite">
+          <div class="interim-text interim-en" id="englishInterim"></div>
+          <div class="interim-text interim-vi" id="vietnameseInterim"></div>
+        </div>
         <!-- Hidden legacy placeholders/logs for JS compatibility (kept but not visible) -->
         <div id="enPlaceholder" style="display:none"></div>
         <div id="viPlaceholder" style="display:none"></div>
@@ -127,20 +142,15 @@
 
         <div class="transcript-feed" id="transcriptFeed" aria-live="polite"></div>
 
-        <div class="interim-block" id="interimBlock" style="display:none" aria-live="polite">
-          <div class="interim-text interim-en" id="englishInterim"></div>
-          <div class="interim-text interim-vi" id="vietnameseInterim"></div>
-        </div>
-
         <!-- Legacy single interim containers kept for JS but mapped to above -->
         <div id="englishContent" style="display:none"></div>
         <div id="vietnameseContent" style="display:none"></div>
       </div>
     </section>
 
-    <div class="dock-resizer" id="dockResizer" role="separator" aria-label="Resize suggestions" title="Drag to resize — double click to expand"></div>
-    <!-- Suggestion Dock – separated like mockup [Image 1] — primary component, expandable -->
-    <section class="suggestion-dock" id="suggestionDock" aria-label="Suggested Answers">
+    <div class="dock-resizer" id="dockResizer" style="display:none" role="separator" aria-label="Resize suggestions" title="Drag to resize — double click to expand"></div>
+    <!-- View: Answers — full-area suggestion workspace -->
+    <section class="suggestion-dock live-view" id="suggestionDock" aria-label="Suggested Answers" aria-hidden="true">
       <div class="dock-header">
         <div class="dock-title">
           <span class="q-icon">?</span>
@@ -148,17 +158,29 @@
           <span class="q-count" id="qCountBadge">0 questions</span>
         </div>
         <div class="dock-header-actions">
-          <button class="dock-expand-btn" id="dockExpandBtn" title="Expand / collapse suggestions (double-click resizer)" aria-label="Expand suggestions">⛶</button>
+          <button class="dock-expand-btn" id="dockExpandBtn" style="display:none" title="Expand / collapse suggestions (double-click resizer)" aria-label="Expand suggestions">⛶</button>
           <div class="dock-tabs" role="tablist" aria-label="Suggestion mode">
             <button class="dock-tab active" data-view="both" role="tab" aria-selected="true">Both</button>
             <button class="dock-tab" data-view="structure" role="tab" aria-selected="false">Structure</button>
             <button class="dock-tab" data-view="complete" role="tab" aria-selected="false">Full</button>
             <button class="dock-tab ghost" id="clearSuggestionsBtn" title="Clear suggestions">Clear</button>
-            <button class="dock-tab ghost" id="manualCompressBtn" title="Compress pending history now">Compress now</button>
           </div>
         </div>
       </div>
-      <!-- Context Prompt for suggestions (not used for summary) — collapsible to save space -->
+      <div class="question-pills" id="questionPills" role="tablist" aria-label="Question list"></div>
+      <div class="suggestion-body scrollable" id="suggestionBody">
+        <div class="suggest-empty" id="suggestEmpty">No questions yet. When AI detects a question, suggestions will appear here.</div>
+      </div>
+    </section>
+
+    <!-- View: Context — suggestion context + compression + inspector -->
+    <section class="context-view live-view" id="contextView" aria-label="Suggestion context" aria-hidden="true">
+      <div class="context-view-header">
+        <h2>Context</h2>
+        <p>What shapes the AI answers: your hint, compressed history and the live inspector.</p>
+      </div>
+      <!-- Context Prompt for suggestions (not used for summary) -->
+      <div class="context-card">
       <div class="context-prompt-wrap collapsed" id="contextPromptWrap">
         <button type="button" class="context-prompt-toggle" id="contextPromptToggle" aria-expanded="false" aria-controls="contextPromptCollapsible">
           <span class="cp-icon">🎯</span> Suggestion Context
@@ -173,8 +195,15 @@
           <span class="context-prompt-hint">Used only for answer suggestions — does not affect AI summary</span>
         </div>
       </div>
+      </div>
+      <div class="context-card">
       <div class="compress-status" id="compressStatus" style="display:none"></div>
+      <div class="compress-row">
+        <button class="compress-now-btn" id="manualCompressBtn" title="Compress pending history now">Compress now</button>
+      </div>
+      </div>
       <!-- Context Inspector — what AI actually sees (live vs compressed) -->
+      <div class="context-card">
       <div class="context-inspector" id="contextInspector" aria-label="Active context inspector">
         <button class="inspector-header" id="inspectorToggle" type="button" aria-expanded="false" aria-controls="inspectorBody">
           <span class="inspector-title">🧠 Active Context</span>
@@ -196,9 +225,6 @@
           </div>
         </div>
       </div>
-      <div class="question-pills" id="questionPills" role="tablist" aria-label="Question list"></div>
-      <div class="suggestion-body scrollable" id="suggestionBody">
-        <div class="suggest-empty" id="suggestEmpty">No questions yet. When AI detects a question, suggestions will appear here.</div>
       </div>
     </section>
   </main>
