@@ -118,15 +118,16 @@ let suggestContextPrompt = State.suggestContextPrompt;
 let contextPromptSaveTimer = State.contextPromptSaveTimer;
 let isSuggestRunning = false;
 let wordCountDirty = false;
-/** Live sub-view: 'transcript' | 'answers' | 'context' — view-only, no transcript logic depends on it */
+/** Live sub-view: 'transcript' | 'answers' | 'context' | 'split' — view-only, no transcript logic depends on it */
 let liveView = 'transcript';
 /**
  * Switch live sub-view — guarded, no throw. Sections keep their IDs so all
  * existing logic (dock render, inspector, compress) works in any view.
+ * 'split' shows transcript + answers stacked together.
  * @param {string} name
  */
 function setLiveView(name) {
-  if (name !== 'transcript' && name !== 'answers' && name !== 'context') return;
+  if (name !== 'transcript' && name !== 'answers' && name !== 'context' && name !== 'split') return;
   liveView = name;
   try {
     const map = {
@@ -134,19 +135,22 @@ function setLiveView(name) {
       answers: document.getElementById('suggestionDock'),
       context: document.getElementById('contextView'),
     };
+    const visible = (k) => name === 'split' ? (k === 'transcript' || k === 'answers') : k === name;
     for (const k of Object.keys(map)) {
       const el = map[k];
       if (!el) continue;
-      const on = k === name;
+      const on = visible(k);
       el.classList.toggle('active', on);
       el.setAttribute('aria-hidden', String(!on));
     }
+    const liveTab = document.getElementById('liveTabContent');
+    if (liveTab) liveTab.classList.toggle('show-split', name === 'split');
     document.querySelectorAll('.live-switch-btn').forEach((b) => {
       const on = b.dataset.liveview === name;
       b.classList.toggle('active', on);
       b.setAttribute('aria-selected', String(on));
     });
-    if (name === 'answers') {
+    if (name === 'answers' || name === 'split') {
       const badge = document.getElementById('answersCountBadge');
       if (badge) badge.classList.remove('ping');
       // Full-area view: drop legacy dock inline heights (old resizer/localStorage)
@@ -1695,7 +1699,7 @@ function updateDock() {
       if (count > 0) {
         answersBadge.hidden = false;
         answersBadge.textContent = count > 99 ? '99+' : String(count);
-        if (liveView !== 'answers') answersBadge.classList.add('ping');
+        if (liveView !== 'answers' && liveView !== 'split') answersBadge.classList.add('ping');
       } else {
         answersBadge.hidden = true;
         answersBadge.textContent = '';
@@ -3267,13 +3271,13 @@ function setupKeyboardShortcuts() {
       if (settingsOverlay) settingsOverlay.style.display = 'none';
       if (permissionOverlay) permissionOverlay.style.display = 'none';
     }
-    // Live sub-view shortcuts: 1/2/3 → Transcript/Answers/Context (live tab only, not while typing)
-    if ((e.key === '1' || e.key === '2' || e.key === '3') && !e.ctrlKey && !e.metaKey && !e.altKey
+    // Live sub-view shortcuts: 1/2/3/4 → Transcript/Answers/Context/Both (live tab only, not while typing)
+    if ((e.key === '1' || e.key === '2' || e.key === '3' || e.key === '4') && !e.ctrlKey && !e.metaKey && !e.altKey
         && !isTypingTarget(e.target)
         && typeof liveTabContent !== 'undefined' && liveTabContent
         && liveTabContent.classList.contains('active-tab-content')) {
       e.preventDefault();
-      setLiveView(e.key === '1' ? 'transcript' : e.key === '2' ? 'answers' : 'context');
+      setLiveView(e.key === '1' ? 'transcript' : e.key === '2' ? 'answers' : e.key === '3' ? 'context' : 'split');
     }
   });
   // ARIA tab handling

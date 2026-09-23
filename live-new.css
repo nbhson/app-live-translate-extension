@@ -16,7 +16,7 @@
 
 /* ---------- Switcher ---------- */
 #liveTabContent .live-switcher {
-  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px;
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.07);
   border-radius: 12px; padding: 3px; margin: 10px 12px 0; flex-shrink: 0;
@@ -441,3 +441,68 @@
   justify-content: flex-start; align-content: flex-start;
 }
 #liveTabContent #suggestionDock .suggestion-body > * { flex-shrink: 0; }
+
+/* ---------- Split view (Both): transcript trên + answers dưới, cuộn riêng ---------- */
+#liveTabContent.show-split.split-layout.tab-content.active-tab-content {
+  overflow-y: auto;
+}
+#liveTabContent.show-split #transcriptSection.live-view.active {
+  flex: 0 0 auto !important;
+  min-height: 280px;
+  max-height: 55%;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#liveTabContent.show-split #transcriptSection .panel-content {
+  max-height: 320px;
+}
+#liveTabContent.show-split #suggestionDock.live-view.active {
+  flex: 1 1 320px !important;
+  min-height: 280px;
+  overflow: hidden;
+  border-top: 1px solid rgba(245, 184, 61, 0.18);
+}
+#liveTabContent.show-split #suggestionDock .suggestion-body {
+  flex: 1 1 auto; min-height: 180px; overflow-y: auto;
+}
+@media (min-width: 560px) {
+  /* Grid 2 hàng: switcher auto-height trên cùng, transcript+answers chia full height còn lại */
+  #liveTabContent.show-split.split-layout.tab-content.active-tab-content {
+    display: grid !important;
+    grid-template-columns: minmax(0, 55%) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "switcher switcher"
+      "transcript answers";
+    align-items: stretch;
+    align-content: stretch;
+    overflow: hidden;
+  }
+  /* Switcher luôn nằm hàng trên cùng, full-width, giữ dạng ngang 4 nút */
+  #liveTabContent.show-split .live-switcher {
+    grid-area: switcher;
+    width: 100%;
+    align-self: start;
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+    grid-auto-rows: min-content;
+    margin-bottom: 0;
+  }
+  #liveTabContent.show-split .live-switch-btn {
+    white-space: nowrap;
+    min-height: 34px;
+  }
+  #liveTabContent.show-split #transcriptSection.live-view.active {
+    grid-area: transcript;
+    min-width: 0; min-height: 0; max-height: none;
+    overflow: hidden;
+    border-bottom: none; border-right: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  #liveTabContent.show-split #transcriptSection .panel-content { max-height: none; min-height: 0; }
+  #liveTabContent.show-split #suggestionDock.live-view.active {
+    grid-area: answers;
+    min-width: 0; min-height: 0;
+    overflow: hidden;
+    border-top: none; border-left: 1px solid rgba(245, 184, 61, 0.18);
+  }
+}
