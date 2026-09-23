@@ -149,6 +149,12 @@ function setLiveView(name) {
     if (name === 'answers') {
       const badge = document.getElementById('answersCountBadge');
       if (badge) badge.classList.remove('ping');
+      // Full-area view: drop legacy dock inline heights (old resizer/localStorage)
+      // so flex:1 fills parent instead of staying at a tiny saved px value.
+      try {
+        const dock = map.answers;
+        if (dock) { dock.style.maxHeight = ''; dock.style.minHeight = ''; dock.style.height = ''; }
+      } catch {}
       if (suggestionBody) suggestionBody.scrollTop = 0;
     }
   } catch (e) { console.warn('[setLiveView]', e); }
@@ -343,44 +349,12 @@ function setupDockResizer() {
   const dock = DOM.suggestionDock || document.getElementById('suggestionDock');
   const expandBtn = DOM.dockExpandBtn || document.getElementById('dockExpandBtn');
   if (!resizer || !dock) return;
-  let startY = 0, startH = 0, dragging = false;
-  const minH = 140, maxH = window.innerHeight * 0.78;
-  const onMove = (e) => {
-    if (!dragging) return;
-    const dy = startY - e.clientY;
-    let nh = startH + dy;
-    nh = Math.max(minH, Math.min(maxH, nh));
-    dock.style.maxHeight = nh + 'px';
-    dock.style.minHeight = nh + 'px';
-  };
-  const onUp = () => {
-    if (!dragging) return;
-    dragging = false; resizer.classList.remove('dragging');
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-    try { localStorage.setItem('dockHeight', dock.style.maxHeight); } catch {}
-  };
-  resizer.addEventListener('mousedown', (e) => {
-    dragging = true; startY = e.clientY; startH = dock.getBoundingClientRect().height;
-    resizer.classList.add('dragging'); e.preventDefault();
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
-  resizer.addEventListener('dblclick', () => {
-    const isExp = dock.classList.contains('expanded');
-    dock.classList.toggle('expanded', !isExp);
-    if (!isExp) { dock.style.maxHeight = ''; dock.style.minHeight = ''; }
-    else { dock.style.maxHeight = '62%'; dock.style.minHeight = '220px'; }
-    try { localStorage.setItem('dockExpanded', String(!isExp)); } catch {}
-  });
-  if (expandBtn) expandBtn.addEventListener('click', () => resizer.dispatchEvent(new MouseEvent('dblclick')));
-  // restore saved
-  try {
-    const savedH = localStorage.getItem('dockHeight');
-    const savedExp = localStorage.getItem('dockExpanded');
-    if (savedExp === 'true') dock.classList.add('expanded');
-    if (savedH && !dock.classList.contains('expanded')) { dock.style.maxHeight = savedH; dock.style.minHeight = savedH; }
-  } catch {}
+  // New UI: Answers is a full-area live-view (resizer hidden via CSS).
+  // Legacy drag/resize + saved px heights would lock the dock tiny — clear them.
+  try { dock.style.maxHeight = ''; dock.style.minHeight = ''; dock.style.height = ''; } catch {}
+  try { localStorage.removeItem('dockHeight'); localStorage.removeItem('dockExpanded'); } catch {}
+  if (expandBtn) expandBtn.style.display = 'none';
+  return;
 }
 
 /** Defer non-critical work to idle — keeps first paint <100ms */
