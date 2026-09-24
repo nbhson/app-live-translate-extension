@@ -15,6 +15,10 @@ export const CONFIG = Object.freeze({
   SPEAKER_CENTROID_DIFF: 320,
   TRANSLATE_TIMEOUT_MS: 8500,
   SUGGEST_MAX_RETRIES: 2,
+  SUGGEST_CACHE_TTL_MS: 10 * 60 * 1000,
+  SUGGEST_STREAM_ENABLED: true,
+  SUGGEST_FAST_MAX_TOKENS: 384,
+  SUGGEST_QUALITY_MAX_TOKENS: 700,
   STORAGE_KEYS: Object.freeze({
     suggestEnabled: 'suggestEnabled',
     compressEnabled: 'compressEnabled',

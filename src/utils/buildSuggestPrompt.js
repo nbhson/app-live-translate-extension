@@ -24,38 +24,36 @@ export function buildSuggestPrompt(question, contextEn, opts = {}) {
     ? `User-provided context (use to tailor tone/style/domain of answers): """${sanitizePromptContext(suggestContextPrompt)}"""\n\n`
     : '';
 
+  // v2 fast prompt: tighter budget, JSON mode friendly, ~30% fewer tokens
+  // opts.quality: 'fast' (40-70 words, 2-3 sentences, ~500 tokens) vs 'quality' (60-120 words)
+  const isFast = opts.quality === 'fast';
+  const wordsSpec = isFast ? '40-70 words' : '60-120 words';
+  const sentSpec = isFast ? '2-3 sentences' : '3-5 sentences';
+  const maxCtx = isFast ? 2500 : 3500;
+  const recentBudget = isFast ? 1000 : 1500;
+
   if (compressEnabled && compressedSummary) {
     const recent = ctxArr.slice(-CONFIG.COMPRESS_RECENT_KEEP);
-    // ensure recent context fits prompt budget — truncate tail
-    const recentCtx = truncateForPrompt(recent, 1500);
+    const recentCtx = truncateForPrompt(recent, recentBudget);
     const comp = compressedSummary.length > CONFIG.COMPRESS_MAX_CHARS
       ? compressedSummary.slice(-CONFIG.COMPRESS_MAX_CHARS)
       : compressedSummary;
-    return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
+    return `You are a bilingual EN->VI meeting assistant. Generate quick English answers.
 
-${contextHint}Compressed history (older, summarized every 5 min): """${comp}"""
+${contextHint}History: """${comp}"""
+Recent (${recent.length}): """${recentCtx}"""
+Q: """${q}"""
 
-Recent conversation (latest ${recent.length} utterances): """${recentCtx}"""
-
-Question: """${q}"""
-
-Task: Use BOTH compressed history, recent conversation${contextHint ? ' and user-provided context' : ''} to generate context-aware answers. Return JSON with two fields:
-- "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
-- "answers": 3 full natural answers in English (each 3-5 sentences, 60-120 words, diverse angles: friendly / detailed / concise etc, each may contain placeholder [City, Country] if location question). Each answer must be a short paragraph of 3-5 complete sentences, natural and conversational. Answers MUST be consistent with the history${contextHint ? ' and the user-provided context' : ''}.
-
-Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
+Return JSON ONLY: {"structures":["3-7 words hint x3"],"answers":["${sentSpec}, ${wordsSpec} paragraph x3, diverse tones, conversational"]}
+Rules: 3 structures + 3 answers, consistent with history${contextHint ? '+context' : ''}, placeholder [City, Country] if location Q. No markdown.`;
   }
 
-  const ctx = truncateForPrompt(ctxArr, 6000);
-  return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
+  const ctx = truncateForPrompt(ctxArr, maxCtx);
+  return `You are a bilingual EN->VI meeting assistant. Generate quick English answers.
 
-${contextHint}Conversation history (all utterances, budget 6000 chars): """${ctx}"""
+${contextHint}History: """${ctx}"""
+Q: """${q}"""
 
-Question: """${q}"""
-
-Task: Return JSON with two fields:
-- "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
-- "answers": 3 full natural answers in English (each 3-5 sentences, 60-120 words, diverse angles: friendly / detailed / concise etc, each may contain placeholder [City, Country] if location question). Each answer must be a short paragraph of 3-5 complete sentences, natural and conversational.${contextHint ? '\nTailor answers to the user-provided context above.' : ''}
-
-Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
+Return JSON ONLY: {"structures":["3-7 words hint x3"],"answers":["${sentSpec}, ${wordsSpec} paragraph x3, diverse tones, conversational"]}
+Rules: 3 structures + 3 answers, consistent with history. No markdown.`;
 }

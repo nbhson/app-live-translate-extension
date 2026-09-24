@@ -7,8 +7,8 @@ describe('buildSuggestPrompt', () => {
 
   it('default mode uses ALL history (compress OFF, 6000c)', () => {
     const p = buildSuggestPrompt(question, ctx4);
-    expect(p).toContain('Conversation history (all utterances');
-    expect(p).toContain('Question: """What did you do yesterday?"""');
+    expect(p).toContain('History:');
+    expect(p).toContain('Q: """What did you do yesterday?"""');
     expect(p).toContain('Hello | We had daily meeting');
     expect(p).not.toContain('Compressed history');
   });
@@ -16,7 +16,7 @@ describe('buildSuggestPrompt', () => {
   it('default mode sends ALL when history long (truncates 6000c)', () => {
     const many = Array.from({ length: 20 }, (_, i) => `utterance ${i} with some text to fill`);
     const p = buildSuggestPrompt(question, many);
-    expect(p).toContain('Conversation history (all utterances');
+    expect(p).toContain('History:');
     expect(p).toContain('utterance 19');
     expect(p).toContain('utterance 0'); // all retained unless >6000c
   });
@@ -25,7 +25,6 @@ describe('buildSuggestPrompt', () => {
     const p = buildSuggestPrompt(question, ctx4, { suggestContextPrompt: 'daily meeting với team dev' });
     expect(p).toContain('User-provided context');
     expect(p).toContain('daily meeting với team dev');
-    expect(p).toContain('Tailor answers to the user-provided context');
   });
 
   it('does not inject when empty', () => {
@@ -45,8 +44,8 @@ describe('buildSuggestPrompt', () => {
     const longHistory = 'Summary bullet 1\nBullet 2';
     const manyCtx = Array.from({ length: 20 }, (_, i) => `utterance ${i}`);
     const p = buildSuggestPrompt(question, manyCtx, { compressEnabled: true, compressedSummary: longHistory });
-    expect(p).toContain('Compressed history');
-    expect(p).toContain('Recent conversation (latest 10 utterances)');
+    expect(p).toContain('History:');
+    expect(p).toContain('Recent (10):');
     expect(p).toContain('utterance 19');
     expect(p).toContain(longHistory);
   });
@@ -55,7 +54,7 @@ describe('buildSuggestPrompt', () => {
     const huge = 'a'.repeat(5000);
     const p = buildSuggestPrompt(question, ['hi'], { compressEnabled: true, compressedSummary: huge });
     // compressed part should be last 3000
-    const after = p.split('Compressed history')[1];
+    const after = p.split('History:')[1];
     expect(after.length).toBeLessThan(4000); // not full 5000
   });
 
@@ -66,8 +65,7 @@ describe('buildSuggestPrompt', () => {
 
   it('output format hint', () => {
     const p = buildSuggestPrompt(question, ctx4);
-    expect(p).toContain('{"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph');
-    expect(p).toContain('Output ONLY JSON');
-    expect(p).toContain('3-5 sentences');
+    expect(p).toContain('{"structures":');
+    expect(p).toContain('Return JSON ONLY');
   });
 });

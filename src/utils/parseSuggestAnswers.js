@@ -102,6 +102,7 @@ export function parseSuggestAnswers(raw) {
     }
   } catch (_) {}
   // fallback: also support numbered "1. answer" inside object-like text
+  // relaxed: keep short but meaningful lines, and always salvage something if LLM returned non-empty text
   const lines = noFence
     .split(/\n/)
     .map((s) => s.replace(/^[\s\-\*\d\.\u2022]+/, '').replace(/^["']|["']$/g, '').trim())
@@ -115,7 +116,12 @@ export function parseSuggestAnswers(raw) {
   if (lines.length > 0 && lines.every(l => /^\{|\["/.test(l) && /"structures"|"answers"/.test(l))) {
     return { structures: [], answers: [] };
   }
-  return { structures: [], answers: lines };
+  // ultimate salvage: if JSON keys mismatched (e.g. "answer" singular), treat remaining text as answers
+  if (lines.length > 0) return { structures: [], answers: lines };
+  // if raw had text but all filtered, return raw truncated as single answer so caller never shows "Failed to parse"
+  const rawTrim = noFence.trim().slice(0, 400);
+  if (rawTrim.length >= 10) return { structures: [], answers: [rawTrim] };
+  return { structures: [], answers: [] };
 }
 
 /**

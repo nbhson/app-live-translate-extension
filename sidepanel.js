@@ -81,6 +81,8 @@ const State = {
   speakerMonitor: null,
   suggestContextPrompt: '',
   contextPromptSaveTimer: null,
+  suggestCache: new Map(),
+  suggestInFlight: new Map(),
 };
 // Legacy aliases for minimal diff in untouched summary code — keep backward compat
 let recognition = State.recognition;
@@ -1281,42 +1283,37 @@ async function handleAiVerifyForIndexSide(idx, originalText){
   }catch(e){ console.warn('[aiDetect]',e&&e.message||e); }
 }
 
-function buildSuggestPrompt(question, contextEn) {
+function buildSuggestPrompt(question, contextEn, opts) {
   function truncateForPrompt(arr, maxChars) { const j = arr.join(' | '); return j.length > maxChars ? j.slice(-maxChars) : j; }
   const sanitizedCtx = sanitizePromptContext(suggestContextPrompt);
-  const contextHint = sanitizedCtx
-    ? `User-provided context (use to tailor tone/style/domain of answers): """${sanitizedCtx}"""\n\n`
-    : '';
+  const contextHint = sanitizedCtx ? `User-provided context (use to tailor tone/style/domain of answers): """${sanitizedCtx}"""\n\n` : '';
+  const quality = opts && opts.quality === 'fast' ? 'fast' : 'quality';
+  const isFast = quality === 'fast';
+  const wordsSpec = isFast ? '40-70 words' : '60-120 words';
+  const sentSpec = isFast ? '2-3 sentences' : '3-5 sentences';
+  const maxCtx = isFast ? 2500 : 3500;
+  const recentBudget = isFast ? 1000 : 1500;
   if (compressEnabled && compressedSummary) {
     const recent = contextEn.slice(-COMPRESS_RECENT_KEEP);
-    const recentCtx = truncateForPrompt(recent, 1500);
+    const recentCtx = truncateForPrompt(recent, recentBudget);
     const comp = compressedSummary.length > COMPRESS_MAX_CHARS ? compressedSummary.slice(-COMPRESS_MAX_CHARS) : compressedSummary;
-    return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
+    return `You are a bilingual EN->VI meeting assistant. Generate quick English answers.
 
-${contextHint}Compressed history (older, summarized every 5 min): """${comp}"""
+${contextHint}History: """${comp}"""
+Recent (${recent.length}): """${recentCtx}"""
+Q: """${question}"""
 
-Recent conversation (latest ${recent.length} utterances): """${recentCtx}"""
-
-Question: """${question}"""
-
-Task: Use BOTH compressed history, recent conversation${contextHint ? ' and user-provided context' : ''} to generate context-aware answers. Return JSON with two fields:
-- "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
-- "answers": 3 full natural answers in English (each 3-5 sentences, 60-120 words, diverse angles: friendly / detailed / concise etc, each may contain placeholder [City, Country] if location question). Each answer must be a short paragraph of 3-5 complete sentences, natural and conversational. Answers MUST be consistent with the history${contextHint ? ' and the user-provided context' : ''}.
-
-Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
+Return JSON ONLY: {"structures":["3-7 words hint x3"],"answers":["${sentSpec}, ${wordsSpec} paragraph x3, diverse tones, conversational"]}
+Rules: 3 structures + 3 answers, consistent with history${contextHint ? '+context' : ''}, placeholder [City, Country] if location Q. No markdown.`;
   }
-  const ctx = truncateForPrompt(contextEn, 6000);
-  return `You are a helpful assistant for a bilingual EN->VI meeting. The user just heard an English question and needs quick suggested answers in English (natural, conversational, polite).
+  const ctx = truncateForPrompt(contextEn, maxCtx);
+  return `You are a bilingual EN->VI meeting assistant. Generate quick English answers.
 
-${contextHint}Conversation history (all utterances, budget 6000 chars): """${ctx}"""
+${contextHint}History: """${ctx}"""
+Q: """${question}"""
 
-Question: """${question}"""
-
-Task: Return JSON with two fields:
-- "structures": 3 short structure hints (3-7 words each, like "Friendly response + acknowledge shared origin + light detail")
-- "answers": 3 full natural answers in English (each 3-5 sentences, 60-120 words, diverse angles: friendly / detailed / concise etc, each may contain placeholder [City, Country] if location question). Each answer must be a short paragraph of 3-5 complete sentences, natural and conversational.${contextHint ? '\nTailor answers to the user-provided context above.' : ''}
-
-Output ONLY JSON object, e.g. {"structures":["Hint 1","Hint 2","Hint 3"],"answers":["Answer 1 paragraph with 3-5 sentences...","Answer 2 paragraph...","Answer 3 paragraph..."]}. No markdown, no extra text.`;
+Return JSON ONLY: {"structures":["3-7 words hint x3"],"answers":["${sentSpec}, ${wordsSpec} paragraph x3, diverse tones, conversational"]}
+Rules: 3 structures + 3 answers, consistent with history. No markdown.`;
 }
 
 /**
@@ -1361,55 +1358,110 @@ async function fetchWithRetrySidepanel(url, fetchOpts, timeoutMs = 30000, maxRet
   }
   throw lastErr || new Error('fetch failed');
 }
-async function callProviderForSuggest(prompt) {
+async function callProviderForSuggest(prompt, opts) {
+  opts = opts || {};
   if (!prompt || typeof prompt !== 'string' || !prompt.trim()) throw new Error('Empty prompt');
   const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
   const model = providerConfig.model;
   const apiKey = providerConfig.apiKey;
+  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
   const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  const isOllama = /ollama/i.test(baseUrl) || /ollama/i.test(model);
+  function geminiEmptyReasonSide(data) {
+    const cand = data && data.candidates && data.candidates[0];
+    if (!cand) {
+      const block = data && data.promptFeedback && data.promptFeedback.blockReason;
+      if (block) return 'Blocked by Gemini: ' + block;
+      return 'Empty LLM response';
+    }
+    const fr = cand.finishReason;
+    if (fr && fr !== 'STOP' && fr !== 'stop') {
+      if (fr === 'SAFETY') return 'Empty LLM response (blocked by safety filter)';
+      if (fr === 'RECITATION') return 'Empty LLM response (recitation block)';
+      if (fr === 'MAX_TOKENS') return 'Empty LLM response (max tokens reached)';
+      return 'Empty LLM response (finishReason: ' + fr + ')';
+    }
+    return 'Empty LLM response';
+  }
+  function shortenPromptForRetrySide(p) {
+    return String(p).replace(/60-120 words/g, '30-60 words').replace(/3-5 sentences/g, '2-3 sentences');
+  }
+  function geminiJsonConfig(max) { return { temperature: 0.8, maxOutputTokens: max, responseMimeType: 'application/json' }; }
+  let curMax = isGemini ? (opts.quality === 'fast' ? 512 : 1024) : isOllama ? (opts.quality === 'fast' ? 384 : 700) : (opts.quality === 'fast' ? 512 : 1024);
+  let curPrompt = prompt;
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-    const res = await fetchWithRetrySidepanel(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.8, maxOutputTokens: 1024 } })
-    }, 30000, 2);
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
-      throw new Error(msg);
+    // streaming fast-path
+    if (opts.onChunk && !isLocal) {
+      try {
+        const streamUrl = `${baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}&alt=sse`;
+        const sRes = await fetch(streamUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) }) });
+        if (sRes.ok && sRes.body && sRes.body.getReader) {
+          const reader = sRes.body.getReader(); const dec = new TextDecoder(); let acc=''; let buf='';
+          while (true) { const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const ch=j.candidates?.[0]?.content?.parts?.[0]?.text||''; if(ch){acc+=ch; try{opts.onChunk(acc);}catch{}}}catch{}} }
+          if (acc && acc.trim()) return acc;
+        }
+      } catch(e){ console.warn('[provider] Gemini stream fallback', e.message); }
     }
-    const data = await res.json();
-    const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    if (!txt) throw new Error('Empty LLM response');
-    return txt;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetchWithRetrySidepanel(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) })
+      }, 20000, 1);
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      if (txt && txt.trim()) return txt;
+      const reason = geminiEmptyReasonSide(data);
+      console.warn(`[provider] Gemini attempt ${attempt+1} empty: ${reason} (prompt ${curPrompt.length} chars, max ${curMax})`, data);
+      lastErr = new Error(reason);
+      if (reason.includes('max tokens') || reason.includes('MAX_TOKENS')) { curMax = 1800; curPrompt = shortenPromptForRetrySide(curPrompt); }
+      if (attempt === 0) await new Promise(r => setTimeout(r, 600));
+    }
+    throw lastErr;
   } else {
     const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const res = await fetchWithRetrySidepanel(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.85,
-        max_tokens: 1024
-      })
-    }, 30000, 2);
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
-      throw new Error(msg);
+    if (opts.onChunk && !isLocal && !isOllama) {
+      try {
+        const sRes = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' } }) });
+        if (sRes.ok && sRes.body && sRes.body.getReader) {
+          const reader=sRes.body.getReader(); const dec=new TextDecoder(); let acc=''; let buf='';
+          while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const d=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||''; if(d){acc+=d; try{opts.onChunk(acc);}catch{}}}catch{}} }
+          if(acc && acc.trim()) return acc;
+        }
+      } catch(e){ console.warn('[provider] OpenAI stream fallback', e.message); }
     }
-    const data = await res.json();
-    let txt = data.choices?.[0]?.message?.content || '';
-    if (!txt && data.message?.content) txt = data.message.content;
-    if (!txt) throw new Error('Empty LLM response');
-    return txt;
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const payload = { model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }) };
+      let res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 1);
+      if (!res.ok && res.status === 400 && !isOllama) { try{await res.text();}catch{} delete payload.response_format; res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 0); }
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      let txt = data.choices?.[0]?.message?.content || '';
+      if (!txt && data.message?.content) txt = data.message.content;
+      if (!txt && typeof data.response === 'string') txt = data.response;
+      if (txt && txt.trim()) return txt;
+      const finish = data.choices?.[0]?.finish_reason;
+      const usage = data.usage;
+      console.warn(`[provider] OpenAI attempt ${attempt+1} empty: finish=${finish} usage=${JSON.stringify(usage)} prompt ${curPrompt.length} chars max ${curMax}`, data);
+      lastErr = new Error(finish === 'content_filter' ? 'Empty LLM response (content filter)' : finish === 'length' ? 'Empty LLM response (max tokens / length)' : 'Empty LLM response');
+      if (finish === 'length') { curMax = 1800; curPrompt = shortenPromptForRetrySide(curPrompt); }
+      if (attempt === 0) await new Promise(r => setTimeout(r, 600));
+    }
+    throw lastErr;
   }
 }
 
@@ -1429,7 +1481,7 @@ async function callProviderGeneric(prompt, opts = {}) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens } })
-    }, 25000, 2);
+    }, 18000, 1);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
@@ -1448,7 +1500,7 @@ async function callProviderGeneric(prompt, opts = {}) {
       method: 'POST',
       headers,
       body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
-    }, 25000, 2);
+    }, 18000, 1);
     if (!res.ok) {
       let msg = `HTTP ${res.status}`;
       try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
@@ -1607,6 +1659,7 @@ function synthesizeStructures(answers) {
   });
 }
 
+function hashForSuggestSide(q, tail) { const n = String(q||'').trim().toLowerCase().replace(/\s+/g,' ').slice(0,160); const t = String(tail||'').slice(-300).toLowerCase(); return n+'|'+t; }
 async function triggerSuggestForIndex(idx, question) {
   if (!suggestEnabled) return;
   const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
@@ -1616,52 +1669,90 @@ async function triggerSuggestForIndex(idx, question) {
     updateDock();
     return;
   }
+  const contextSlice = compressEnabled
+    ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
+    : finalizedEnPhrases.slice(0, idx + 1);
+  const ctxTail = contextSlice.slice(-4).join('|').slice(-300);
+  const hash = hashForSuggestSide(question, ctxTail + (suggestContextPrompt||'').slice(-100));
+  // cache hit — instant (0ms)
+  const cached = State.suggestCache.get(hash);
+  if (cached && Date.now() - cached.ts < 10*60*1000) {
+    questionSuggestions[idx] = { state: 'done', question, answers: cached.data.answers.slice(), structures: cached.data.structures.slice() };
+    selectedQuestionIdx = idx; updateSuggestCard(idx); updateDock(); return;
+  }
+  const inflight = State.suggestInFlight.get(hash);
+  if (inflight) {
+    questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
+    selectedQuestionIdx = idx; updateSuggestCard(idx); updateDock();
+    try { const r = await inflight; questionSuggestions[idx] = { state: 'done', question, answers: r.answers.slice(), structures: r.structures.slice() }; } catch(e){ questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message||'AI error'}; }
+    updateSuggestCard(idx); updateDock(); autoScroll(true); return;
+  }
   // parallel: display loading immediately, then fetch concurrently (no serial queue)
   questionSuggestions[idx] = { state: 'loading', question, answers: [], structures: [] };
   // auto-select latest question for pills bar
   selectedQuestionIdx = idx;
   updateSuggestCard(idx);
   updateDock();
-  // fire async without awaiting queue
-  (async () => {
+  // fire async without awaiting queue — with streaming + dedup
+  const promise = (async () => {
     try {
-      const contextSlice = compressEnabled
-        ? finalizedEnPhrases.slice(Math.max(0, idx - COMPRESS_RECENT_KEEP + 1), idx + 1)
-        : finalizedEnPhrases.slice(0, idx + 1);
-      const prompt = buildSuggestPrompt(question, contextSlice);
-      const raw = await callProviderForSuggest(prompt);
+      // fast quality first for low latency (~2-3s perceived via streaming), fallback to quality is not needed
+      const prompt = buildSuggestPrompt(question, contextSlice, { quality: 'fast' });
+      let streamingShown = false;
+      const onChunk = (acc) => {
+        if (streamingShown) return;
+        try {
+          const p = parseSuggestAnswers(acc);
+          if ((p.answers && p.answers.length) || (p.structures && p.structures.length)) {
+            // show partial instantly
+            const partial = { state: 'done', question, answers: p.answers.slice(0,3), structures: p.structures.slice(0,3) };
+            if (partial.answers.length || partial.structures.length) {
+              questionSuggestions[idx] = partial;
+              updateSuggestCard(idx); updateDock();
+              streamingShown = true;
+            }
+          }
+        } catch {}
+      };
+      const raw = await callProviderForSuggest(prompt, { onChunk });
       const parsed = parseSuggestAnswers(raw);
       let { structures, answers } = parsed;
-      // safety: never keep raw JSON string as an answer (bug: fallback lines -> JSON display)
       answers = answers.filter(a => !(a.trim().startsWith('{') && /"structures"|"answers"/.test(a)));
       structures = structures.filter(s => !(s.trim().startsWith('{') && /"structures"|"answers"/.test(s)));
-      // filter structure-like answers (contain " + " and short) already done in parse, but double-check
       answers = answers.filter(a => !(a.includes(' + ') && a.split(/\s+/).length < 15));
-      // Validate answer quality: must be substantial (≥ 60 chars and ≥ 15 words)
-      const isSubstantial = (a) => a.length >= 60 && a.split(/\s+/).length >= 15;
+      // relax: vague Q like "can you figure out why" legitimately returns short answers — don't nuke them
+      const isSubstantial = (a) => a.length >= 25 && a.split(/\s+/).length >= 5;
       const substantialAnswers = answers.filter(isSubstantial);
       if (substantialAnswers.length > 0) answers = substantialAnswers;
-      else if (answers.length > 0 && answers.every(a => a.length < 60)) {
-        // all answers too short — likely structures, don't show as complete answers
-        answers = [];
+      else if (answers.length > 0 && answers.every(a => a.length < 25 && a.split(/\s+/).length < 5)) {
+        // keep original instead of wiping — short is better than "Failed to parse"
       }
-      if (answers.length === 0 && structures.length === 0) throw new Error('Failed to parse suggestions');
-      if (answers.length === 0) {
-        // keep answers empty — will show only structures, not fake complete answers
-        // don't copy structures into answers
-        console.warn('[suggest] LLM returned only structures for', question);
+      if (answers.length === 0 && structures.length === 0) {
+        // salvage raw: never leave user with "Failed to parse" when LLM did return text
+        if (raw && raw.trim().length >= 10) {
+          answers = [raw.trim().slice(0, 400)];
+        } else throw new Error('Failed to parse suggestions');
       }
       if (structures.length === 0 && answers.length > 0) structures = synthesizeStructures(answers);
       answers = answers.slice(0,3);
       structures = structures.slice(0,3);
+      const result = { answers, structures };
+      State.suggestCache.set(hash, { data: result, ts: Date.now() });
+      if (State.suggestCache.size > 80) { const first = State.suggestCache.keys().next().value; State.suggestCache.delete(first); }
       questionSuggestions[idx] = { state: 'done', question, answers, structures };
+      return result;
     } catch (e) {
       questionSuggestions[idx] = { state: 'error', question, answers: [], structures: [], error: e.message || 'AI error' };
+      throw e;
+    } finally {
+      updateSuggestCard(idx);
+      updateDock();
+      autoScroll(true);
+      State.suggestInFlight.delete(hash);
     }
-    updateSuggestCard(idx);
-    updateDock();
-    autoScroll(true);
   })();
+  State.suggestInFlight.set(hash, promise);
+  promise.catch(()=>{});
   return;
 }
 
@@ -1762,7 +1853,15 @@ function renderDockBody() {
     return;
   }
   if (data.state === 'error') {
-    suggestionBody.innerHTML = `<div class="suggest-error">⚠️ ${escapeHtml(data.error)}</div>`;
+    const err = escapeHtml(data.error || 'AI error');
+    const idxVal = String(selectedQuestionIdx);
+    suggestionBody.innerHTML = `<div class="suggest-error">⚠️ ${err} <button class="retry-suggest-btn" data-retry-idx="${idxVal}" style="margin-left:8px;padding:4px 10px;border-radius:6px;border:1px solid var(--border);cursor:pointer">Retry</button></div>`;
+    const retryBtn = suggestionBody.querySelector('[data-retry-idx]');
+    if (retryBtn) retryBtn.addEventListener('click', () => {
+      const rIdx = Number(retryBtn.getAttribute('data-retry-idx'));
+      const q = questionSuggestions[rIdx]?.question || data.question;
+      if (Number.isFinite(rIdx) && q) triggerSuggestForIndex(rIdx, q);
+    });
     return;
   }
   // done
