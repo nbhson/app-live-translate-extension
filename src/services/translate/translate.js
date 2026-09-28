@@ -1,4 +1,5 @@
 import { CONFIG } from '../../config.js';
+import { translateWithFallbackChain } from './providers.js';
 
 const TRANSLATE_MAX_CHARS = 4200;
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
@@ -36,8 +37,9 @@ function chunkBySentence(text, maxLen) {
 
 /**
  * Translate EN→VI via Google free API — abortable, cached, validated, chunked, retryable
+ * Falls back to MyMemory -> Lingva -> AI provider when Google fails (429/5xx/network).
  * @param {string} text
- * @param {{ signal?: AbortSignal, cache?: any, controllers?: Set<AbortController>, retries?: number }} opts
+ * @param {{ signal?: AbortSignal, cache?: any, controllers?: Set<AbortController>, retries?: number, fallback?: boolean, providerConfig?: object, callGeneric?: Function, fetchFn?: Function, disableMyMemory?: boolean, disableLingva?: boolean, disableAI?: boolean }} opts
  * @returns {Promise<string>}
  */
 export async function translateText(text, opts = {}) {
@@ -46,6 +48,38 @@ export async function translateText(text, opts = {}) {
   const cache = opts.cache;
   // LRU touch
   if (cache?.has(trimmed)) return cache.get(trimmed);
+
+  const googleOut = await translateViaGoogle(trimmed, opts);
+  if (googleOut) return googleOut;
+  // Google failed (rate-limit / network / timeout) — try fallback chain
+  // Abort means user cancelled: don't waste fallback calls.
+  if (opts.signal?.aborted) return '';
+  if (opts.fallback === false) return '';
+  try {
+    const { text: fb, via } = await translateWithFallbackChain(trimmed, {
+      signal: opts.signal,
+      fetchFn: opts.fetchFn,
+      providerConfig: opts.providerConfig,
+      callGeneric: opts.callGeneric,
+      disableMyMemory: opts.disableMyMemory,
+      disableLingva: opts.disableLingva,
+      disableAI: opts.disableAI,
+    });
+    if (fb) {
+      if (cache) cache.set(trimmed, fb);
+      try { opts.onFallback?.(via, trimmed); } catch {}
+      return fb;
+    }
+  } catch {}
+  return '';
+}
+
+/**
+ * Google primary — extracted verbatim from previous translateText body.
+ * Returns '' on any failure (caller decides fallback).
+ */
+async function translateViaGoogle(trimmed, opts = {}) {
+  const cache = opts.cache;
 
   // Chunk long text to avoid URL length / 5000 limit
   if (trimmed.length > TRANSLATE_MAX_CHARS) {

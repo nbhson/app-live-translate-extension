@@ -2,7 +2,7 @@ import { CONFIG } from '../../config.js';
 import { translateText } from './translate.js';
 
 export async function translateBatchConcurrent(tasks, opts = {}) {
-  const { concurrency = CONFIG.MAX_CONCURRENT_TRANSLATE, cache, controllers, setViText, scheduleWordCountUpdate, finalizedViPhrases, signal } = opts;
+  const { concurrency = CONFIG.MAX_CONCURRENT_TRANSLATE, cache, controllers, setViText, scheduleWordCountUpdate, finalizedViPhrases, signal, providerConfig, callGeneric, fetchFn, fallback } = opts;
   if (!Array.isArray(tasks) || tasks.length === 0) return [];
   const conc = Math.max(1, Math.min(concurrency, tasks.length, 5));
   const results = new Array(tasks.length);
@@ -16,7 +16,7 @@ export async function translateBatchConcurrent(tasks, opts = {}) {
       if (!t || typeof t.text !== 'string' || !t.text.trim()) { results[cur] = ''; continue; }
       if (finalizedViPhrases?.[t.idx] && finalizedViPhrases[t.idx] !== '…' && finalizedViPhrases[t.idx] !== '[Translation failed]') { results[cur] = finalizedViPhrases[t.idx]; continue; }
       try {
-        const out = await translateText(t.text, { cache, controllers, signal });
+        const out = await translateText(t.text, { cache, controllers, signal, providerConfig, callGeneric, fetchFn, fallback });
         if (signal?.aborted) { results[cur] = ''; break; }
         const val = out || '[Translation failed]';
         if (!out) failed++;

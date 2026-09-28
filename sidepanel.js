@@ -21,6 +21,10 @@ const CONFIG = Object.freeze({
   SPEAKER_MIN_SPEECH_MS: 600,
   SPEAKER_CENTROID_DIFF: 320,
   TRANSLATE_TIMEOUT_MS: 8500,
+  TRANSLATE_FALLBACK_ENABLED: true,
+  TRANSLATE_FALLBACK_TIMEOUT_MS: 8000,
+  TRANSLATE_AI_FALLBACK_TIMEOUT_MS: 15000,
+  MYMEMORY_MAX_CHARS: 450,
   STORAGE_KEYS: Object.freeze({
     suggestEnabled: 'suggestEnabled',
     compressEnabled: 'compressEnabled',
@@ -2330,7 +2334,111 @@ function promoteLiveToFinal(enText) {
   return false;
 }
 
+// Fallback providers — mirror of src/services/translate/providers.js (sidepanel runtime copy)
+const MYMEMORY_ENDPOINT_SIDE = 'https://api.mymemory.translated.net/get';
+const LINGVA_ENDPOINTS_SIDE = ['https://lingva.ml/api/v1/en/vi', 'https://lingva.thedaviddelta.com/api/v1/en/vi'];
+function fetchWithTimeoutSide(url, { signal, timeoutMs = 8000 } = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => { try { ctrl.abort(); } catch {} }, timeoutMs);
+  let onAbort = null;
+  if (signal) {
+    if (signal.aborted) { clearTimeout(t); return Promise.reject(new DOMException('Aborted', 'AbortError')); }
+    onAbort = () => { try { ctrl.abort(); } catch {} };
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+  return fetch(url, { signal: ctrl.signal }).finally(() => {
+    clearTimeout(t);
+    if (signal && onAbort) try { signal.removeEventListener('abort', onAbort); } catch {}
+  });
+}
+function chunkForMyMemorySide(text, maxLen) {
+  const s = String(text || '');
+  maxLen = maxLen || CONFIG.MYMEMORY_MAX_CHARS || 450;
+  if (s.length <= maxLen) return [s];
+  const parts = s.split(/(?<=[.!?])\s+/);
+  const chunks = []; let cur = '';
+  for (const p of parts) {
+    if ((cur + ' ' + p).trim().length > maxLen) {
+      if (cur) chunks.push(cur.trim());
+      if (p.length > maxLen) { for (let i = 0; i < p.length; i += maxLen) chunks.push(p.slice(i, i + maxLen)); cur = ''; }
+      else cur = p;
+    } else cur = cur ? `${cur} ${p}` : p;
+  }
+  if (cur) chunks.push(cur.trim());
+  return chunks.filter(Boolean);
+}
+async function translateViaMyMemorySide(text, opts = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed || opts.signal?.aborted) return '';
+  const chunks = chunkForMyMemorySide(trimmed);
+  const outs = [];
+  for (const c of chunks) {
+    if (opts.signal?.aborted) return '';
+    let res;
+    try { res = await fetchWithTimeoutSide(`${MYMEMORY_ENDPOINT_SIDE}?q=${encodeURIComponent(c)}&langpair=en|vi`, { signal: opts.signal, timeoutMs: CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS }); }
+    catch (e) { if (e?.name === 'AbortError') return ''; return ''; }
+    if (!res?.ok) return '';
+    let data; try { data = await res.json(); } catch { return ''; }
+    const t = String(data?.responseData?.translatedText || '').trim();
+    if (/MYMEMORY WARNING/i.test(t)) return '';
+    if (!t) return '';
+    if (t.toLowerCase() === c.toLowerCase() && c.length > 15) return '';
+    outs.push(t);
+  }
+  return outs.join(' ').trim();
+}
+async function translateViaLingvaSide(text, opts = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed || trimmed.length > 2000 || opts.signal?.aborted) return '';
+  for (const base of LINGVA_ENDPOINTS_SIDE) {
+    if (opts.signal?.aborted) return '';
+    let res;
+    try { res = await fetchWithTimeoutSide(`${base.replace(/\/+$/, '')}/${encodeURIComponent(trimmed)}`, { signal: opts.signal, timeoutMs: CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS }); }
+    catch (e) { if (e?.name === 'AbortError') return ''; continue; }
+    if (!res?.ok) continue;
+    try { const data = await res.json(); const out = String(data?.translation || '').trim(); if (out) return out; } catch {}
+  }
+  return '';
+}
+function isValidAiProviderConfigSide(cfg) {
+  if (!cfg || typeof cfg !== 'object') return false;
+  const base = String(cfg.baseUrl || '').trim(); const model = String(cfg.model || '').trim();
+  if (!/^https?:\/\/.+/.test(base) || !model) return false;
+  const isLocal = base.includes('localhost') || base.includes('127.0.0.1');
+  if (!cfg.apiKey && !isLocal) return false;
+  return true;
+}
+async function translateViaAISide(text, opts = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed || opts.signal?.aborted) return '';
+  if (!isValidAiProviderConfigSide(providerConfig)) return '';
+  try {
+    const raw = await callProviderGeneric(`Translate the following English text to Vietnamese. Output ONLY the Vietnamese translation, no explanation, no quotes, no romanization.\n\nEnglish: ${trimmed}`, { temperature: 0.1, maxTokens: 512, systemPrompt: 'You are a precise English to Vietnamese translator. Return only the translation.' });
+    const out = String(raw || '').trim().replace(/^["'“”`]+|["'“”`]+$/g, '').trim();
+    if (!out) return '';
+    if (out.toLowerCase() === trimmed.toLowerCase() && trimmed.length > 15) return '';
+    return out;
+  } catch (e) { if (e?.name === 'AbortError') return ''; return ''; }
+}
+async function translateWithFallbackChainSide(text, opts = {}) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return { text: '', via: 'none' };
+  if (opts.signal?.aborted) return { text: '', via: 'aborted' };
+  const order = ['mymemory', 'lingva', 'ai'];
+  for (const name of order) {
+    if (opts.signal?.aborted) return { text: '', via: 'aborted' };
+    if (name === 'ai' && opts.disableAI) continue;
+    let out = '';
+    if (name === 'mymemory') out = await translateViaMyMemorySide(trimmed, opts);
+    else if (name === 'lingva') out = await translateViaLingvaSide(trimmed, opts);
+    else if (name === 'ai') out = await translateViaAISide(trimmed, opts);
+    if (out) return { text: out, via: name };
+  }
+  return { text: '', via: 'failed' };
+}
+
 // Translate Text via Google Translate free API — cache + chunking + retry + LRU
+// + fallback chain MyMemory -> Lingva -> AI (mirror src/services/translate/translate.js)
 async function translateText(text, opts = {}) {
   if (!text || !String(text).trim()) return '';
   const trimmed = String(text).trim();
@@ -2339,6 +2447,24 @@ async function translateText(text, opts = {}) {
     translationCache.delete(trimmed); translationCache.set(trimmed, cached);
     return cached;
   }
+  const googleOut = await translateViaGoogleSide(trimmed, opts);
+  if (googleOut) return googleOut;
+  if (opts.signal?.aborted) return '';
+  if (opts.fallback === false || CONFIG.TRANSLATE_FALLBACK_ENABLED === false) return '';
+  try {
+    const { text: fb, via } = await translateWithFallbackChainSide(trimmed, opts);
+    if (fb) {
+      translationCache.set(trimmed, fb);
+      if (translationCache.size > TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value);
+      console.warn(`[translate] fallback via ${via}:`, trimmed.slice(0, 60));
+      return fb;
+    }
+  } catch {}
+  return '';
+}
+async function translateViaGoogleSide(text, opts = {}) {
+  if (!text || !String(text).trim()) return '';
+  const trimmed = String(text).trim();
   const TRANSLATE_MAX = 4200;
   if (trimmed.length > TRANSLATE_MAX) {
     const parts = (() => {
