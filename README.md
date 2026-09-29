@@ -2,7 +2,7 @@
 
 Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 5-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
-Version **1.3.0** · MV3 · MIT · [Harness & Compression Agent](harness.md)
+Version **1.3.1** · MV3 · MIT · [Harness & Compression Agent](harness.md)
 
 ![Live Translate Demo](<Screenshot 2026-09-19 at 14.47.07.png>)
 
@@ -147,7 +147,10 @@ sequenceDiagram
 
 ---
 
-## Flow 3 — Translation EN→VI (Google Translate + chunk + retry + LRU)
+## Flow 3 — Translation EN→VI (Google + fallback chain + chunk + retry + LRU)
+
+> Chain: **Google (primary)** → `MyMemory` → `Lingva` → **AI provider** (dùng LLM đã cấu hình).
+> Fallback chỉ chạy khi Google fail (429/5xx/network/timeout), abort của user thì không fallback.
 
 ```mermaid
 flowchart TD
@@ -182,7 +185,8 @@ flowchart TD
 
 | File | Role |
 |---|---|
-| `translate.js` | `translateText()` — 4200 chunking, 2 retries (429/5xx/network/empty), timeout `TRANSLATE_TIMEOUT_MS=8500`, linked external abort, `_internals` for tests |
+| `translate.js` | `translateText()` — 4200 chunking, 2 retries (429/5xx/network/empty), timeout `TRANSLATE_TIMEOUT_MS=8500`, linked external abort, `_internals` for tests; gọi fallback chain khi Google fail |
+| `providers.js` | Fallback chain `translateWithFallbackChain()` — `translateViaMyMemory` (chunk 450 chars, quota ~5000 chars/day/IP, echo-detect) → `translateViaLingva` (multi-instance, cap 2000 chars) → `translateViaAI` (temp 0.1, dùng provider đã cấu hình). Trả về `{ text, via }` |
 | `cache.js` | `createTranslateCache(limit=500)` — real LRU, `safeLimit` clamped 1..2000, `get/set/has/delete/clear/size/keys` |
 | `batch.js` | `translateBatchConcurrent(tasks, {concurrency=3})` — worker pool, skips tasks that already have VI, `'[Translation failed]'` not marked as final value, `results.failed` telemetry |
 
@@ -386,7 +390,7 @@ sequenceDiagram
     T->>D: channel: autoScroll checkbox ON<br/>stick when isNearTop() (scrollTop < 120)<br/>scrollTo({top:0, behavior})
 ```
 
-**XSS protection:** all user/LLM content goes through `escapeHtml()` (`& < > " ' \``). `DOMPurify` is in `package.json` and imported in `src/main.js` (new module), not yet used in `sidepanel.js` runtime.
+**XSS protection:** `parseMarkdown()` escape HTML trước khi build tags nên `summaryMarkdown.innerHTML` an toàn; `showToast()` dùng `textContent` (mirror `src/ui/components/toast.js`), mọi transcript đều qua `escapeHtml()` (`& < > " ' \``). `DOMPurify` giữ trong `package.json` cho ESM sidepanel tương lai (sanitize HTML đầy đủ), runtime non-module hiện tại không cần vì đã escape-first.
 
 ---
 
@@ -454,11 +458,13 @@ optional_host:      https://*/*            (add if custom URL needed → validat
 
 ```bash
 npm install
-npm test               # vitest run --coverage  (20 suites / 166 tests)
+npm test               # vitest run --coverage  (22 suites)
 npm run test:watch
-npm run build          # vite build → dist/main.js (91.1 kB, gzip 27.9 kB)
-node --check sidepanel.js   # syntax check runtime script
+npm run build          # vite build → dist/main.js
+npm run lint           # node --check sidepanel/background/permission
 ```
+
+> ARM Mac gặp `Cannot find @rollup/rollup-darwin-arm64`: xóa `node_modules` + `package-lock.json` rồi `npm i` lại (bug npm optional deps). Dùng Node theo `.nvmrc`.
 
 **Checklist when editing code:**
 1. Keep the **mirror** `sidepanel.js` ↔ `src/` (same behavior). If you change anything in `src/`, mirror it in `sidepanel.js`.
@@ -506,6 +512,11 @@ tests/
 
 ## Changelog
 
+- **1.3.1 (2026-09-29)**: Hardening + docs sync:
+  - `sidepanel.js` `showToast` chuyển từ `innerHTML` sang `textContent` (XSS-safe, mirror `src/ui/components/toast.js`).
+  - Xóa `console.log` production (`src/main.js`, `src/services/llm/compress.js` — chỉ giữ `console.warn` cho lỗi thật).
+  - Đồng bộ version `manifest.json` + `package.json` → `1.3.1`; sửa script `lint` gãy (eslint chưa cài → `node --check`); thêm `.nvmrc` + CI (`lint` → `vitest` → `build`).
+  - Docs: Flow 3 ghi đúng fallback chain `Google → MyMemory → Lingva → AI` (code đã có từ trước, README cũ chỉ ghi Google).
 - **2026-09-20**: Pending all-questions + Suggestion dock tối ưu + Hybrid AI detect:
   - `contextInspector` (`src/ui/components/contextInspector.js:18`, `sidepanel.js:377`): `Pending` tab → **All questions** (`en.filter(isQuestion)` với `allQuestionsCount`, meta `• N questions`), giữ `pendingList` cho compress.
   - `sidepanel.html:146` + `sidepanel.css:589`: dock `62%→78%`, `dock-resizer` drag (persist `localStorage dockHeight`), `dock-expand-btn` ⛶, `Suggestion Context` collapsible (collapsed mặc định, auto-expand khi có value/focus), `Full` tab (rút gọn từ Full sentences), `Questions` tab (từ Pending).

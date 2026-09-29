@@ -23,18 +23,17 @@ import { getContextSnapshot } from './ui/components/contextInspector.js';
 import { buildCompressPrompt } from './utils/buildCompressPrompt.js';
 import { shouldTriggerAiDetect, shouldTriggerAiSplit, shouldTriggerAiFalseNegative } from './utils/shouldTriggerAiDetect.js';
 import { buildDetectPrompt, parseDetectResponse, validateAiQuestions, detectQuestionsViaAI } from './services/llm/questionDetect.js';
-import DOMPurify from 'dompurify';
 
 // Composition root — inject real globals; tests inject mocks via createHarness({chromeApi: mock})
 export const harness = createHarness();
 
-// Prove wiring
-console.log('[main] harness ready', {
-  config: CONFIG.SILENCE_THRESHOLD,
-  isQuestion: isQuestion('Are you ok?'),
-  purify: typeof DOMPurify.sanitize,
-  harness: Object.keys(harness),
-});
+// Dev-only wiring check (no console noise in production / tests)
+if (typeof process !== 'undefined' && process.env?.NODE_ENV !== 'test') {
+  try {
+    const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV;
+    if (isDev) console.debug('[main] harness ready');
+  } catch { /* ignore */ }
+}
 
 // Future ESM sidepanel init would be:
 // harness.speech.attachHandlers(harness.speech.createRecognition(), harness.store, { ...uiActions })

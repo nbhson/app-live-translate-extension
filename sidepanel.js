@@ -413,7 +413,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await Promise.all([loadCompressPref(), loadContextPrompt()]);
       updateCompressToggleUI(); updateDock(); updateContextInspector();
       performance.mark('sidepanel-ready');
-      try { performance.measure('sidepanel-full', 'sidepanel-js-start', 'sidepanel-ready'); const m = performance.getEntriesByName('sidepanel-full')[0]; if (m) console.log(`[perf] sidepanel full ${m.duration.toFixed(0)}ms`); } catch {}
+      try { performance.measure('sidepanel-full', 'sidepanel-js-start', 'sidepanel-ready'); } catch {}
       // Preload NLP in background after UI is ready (non-blocking)
       onIdle(() => { void ensureNlpLoaded(); });
     } catch (e) { console.warn('[init-idle]', e); }
@@ -1577,7 +1577,6 @@ async function performCompression(isManual = false) {
     syncState();
     updateCompressToggleUI();
     if (isManual) showToast(`Compressed ${pendingCount} sentences`, 'success');
-    else console.log('[compress] auto compressed', pendingCount, 'utterances');
   } catch (e) {
     console.warn('compress failed', e);
     if (isManual) showToast('Compression failed: ' + (e.message||e), 'error'); else showToast('Auto compress failed: '+(e.message||e),'error');
@@ -3462,13 +3461,18 @@ function scheduleWordCountUpdate() {
   });
 }
 
-/** Show toast — validated, auto-dismiss, no throw */
+/** Show toast — validated, auto-dismiss, no throw. Uses textContent (XSS-safe, mirrors src/ui/components/toast.js) */
 function showToast(message, type = 'default') {
   if (!toastContainer) return;
   const toast = document.createElement('div');
   toast.className = 'toast ' + type;
   const icon = type === 'success' ? '✅' : type === 'error' ? '⚠️' : '💬';
-  toast.innerHTML = `<span class="toast-icon">${icon}</span><span>${message}</span>`;
+  const iconEl = document.createElement('span');
+  iconEl.className = 'toast-icon';
+  iconEl.textContent = icon;
+  const msgEl = document.createElement('span');
+  msgEl.textContent = String(message ?? '');
+  toast.append(iconEl, msgEl);
   toastContainer.appendChild(toast);
   setTimeout(() => {
     toast.style.animation = 'toastOut 0.3s forwards';

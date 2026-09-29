@@ -1,6 +1,6 @@
 # Harness & Compression Agent — Live Translate Extension
 
-> Version: 1.3.0 · Date: 2026-09-20 · Scope: Chrome Extension (MV3) — `sidepanel.js` + `src/` + `background.js`
+> Version: 1.3.1 · Date: 2026-09-29 · Scope: Chrome Extension (MV3) — `sidepanel.js` + `src/` + `background.js`
 > Agent scope: **Compression + QuestionDetect supplement** (Suggestion/Summary giữ nguyên prompt chính) · Dock resizable + collapsible prompt
 
 ## 1. Tổng quan
@@ -302,6 +302,9 @@ npm run build   # vite build → dist/main.js 83.22 kB / gzip 25.58 kB (was 79.5
 | `tests/harness.test.js` + `compressionAgent.test.js` | Thêm 16 tests | Không — additive |
 | `src/harness/agent/*` | Compression agent (LLM+harness, no loop) | Không — fallback về prompt cũ nếu fail |
 | `src/services/llm/compress.js:30` + `sidepanel.js:1055` | Dùng agent, QA-aware prompt | Không — logic cũ giữ làm fallback |
+| `sidepanel.js:showToast` (1.3.1) | `innerHTML` → `textContent` (mirror `src/ui/components/toast.js`) | Không — cùng output, hết XSS vector từ error/API message |
+| `src/main.js` + `compress.js` (1.3.1) | Xóa `console.log` production, giữ `console.warn` lỗi thật | Không |
+| `package.json`/`manifest.json` (1.3.1) | Sync version → 1.3.1; `lint` → `node --check` (eslint chưa có) | Không |
 
 **Verification:**
 
@@ -314,11 +317,11 @@ npm run build   # vite build → dist/main.js 83.22 kB / gzip 25.58 kB (was 79.5
 
 ## 7. Hướng tiếp theo (không bắt buộc)
 
-1. **Bật ESM sidepanel:** uncomment `sidepanel.html:323` `<script type="module" src="dist/main.js">`, cho `sidepanel.js` chỉ còn shim `import 'dist/main.js'` — giảm 2713→~100 dòng.
+1. **Bật ESM sidepanel:** uncomment `sidepanel.html:323` `<script type="module" src="dist/main.js">`, cho `sidepanel.js` chỉ còn shim `import 'dist/main.js'` — giảm 3553→~100 dòng.
 2. **Xóa mirror:** sau khi ESM ổn định, xóa duplicate logic `isQuestion`/`translateText` trong `sidepanel.js`, chỉ giữ `Harness` import.
 3. **Tăng coverage harness:** mock `AudioContext`/`SpeechRecognition` trong `vitest` để đạt 85%+ (hiện 46%).
 4. **Types:** thêm `jsconfig.json` + `// @ts-check` hoặc migrate `src/harness/ports.js` sang `*.d.ts`.
-5. **CI:** thêm `npm run build && npx vitest run` vào GitHub Actions.
+5. ~~**CI:** thêm `npm run build && npx vitest run` vào GitHub Actions.~~ ✅ done (1.3.1: `.github/workflows/ci.yml` + `.nvmrc`).
 
 ---
 

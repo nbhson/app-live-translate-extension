@@ -57,7 +57,6 @@ export function createCompressService(store, deps) {
         await storageSet({ compressedSummary, lastCompressedIdx });
         updateCompressToggleUI();
         if (isManual) showToast(`Compressed ${pending} sentences`, 'success');
-        else console.log('[compress] compressed', pending, '->', clean.slice(0,60));
       } catch (e) { console.warn('[compress]', e); if (isManual) showToast('Compression failed: ' + (e.message || e), 'error'); else showToast('Auto compress failed: ' + (e.message || e), 'error'); }
       finally {
         store.setState({ compressInProgress: false });
