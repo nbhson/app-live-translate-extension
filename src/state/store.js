@@ -4,6 +4,7 @@
  */
 import { CONFIG } from '../config.js';
 import { compactTranscriptState } from '../services/transcript/compact.js';
+import { appendFullHistory } from '../services/summary/summarySource.js';
 
 export function createStore(initial = {}) {
   const state = {
@@ -16,6 +17,10 @@ export function createStore(initial = {}) {
     finalizedEnPhrases: [],
     finalizedViPhrases: [],
     utteranceSpeakers: [],
+    // Append-only archive of EVERY finalized EN utterance (never compacted).
+    // AI summary reads this so hour-long meetings keep head content after
+    // the live window is compacted. Capped inside appendFullHistory (~5000).
+    fullEnHistory: [],
     questionSuggestions: {},
     suggestEnabled: true,
     utteranceDomCache: [],
@@ -61,6 +66,7 @@ export function createStore(initial = {}) {
       state.finalizedEnPhrases = [];
       state.finalizedViPhrases = [];
       state.utteranceSpeakers = [];
+      state.fullEnHistory = [];
       state.questionSuggestions = {};
       state.utteranceDomCache = [];
       state.currentSpeakerId = 0;
@@ -71,7 +77,18 @@ export function createStore(initial = {}) {
       if (state.silenceTimer) { clearTimeout(state.silenceTimer); state.silenceTimer = null; }
     },
     /**
+     * Append finalized utterances to the append-only summary archive.
+     * Call for every new finalized utterance (in addition to the live window).
+     * @param {string|string[]} texts
+     */
+    appendFullHistory(texts) {
+      const arr = Array.isArray(texts) ? texts : [texts];
+      state.fullEnHistory = appendFullHistory(state.fullEnHistory, arr);
+      this.setState({});
+    },
+    /**
      * Memory guard — drop oldest utterances past the cap and re-index.
+     * Dropped head is archived into fullEnHistory so summary keeps full coverage.
      * Caller owns DOM removal for dropped cache roots.
      * @param {number} [keepMax]
      * @returns {boolean} true if compaction happened
@@ -94,6 +111,15 @@ export function createStore(initial = {}) {
       state.questionSuggestions = next.suggestions;
       state.selectedQuestionIdx = next.selectedIdx;
       state.lastCompressedIdx = next.lastCompressedIdx;
+      // Archive dropped head — but only backfill what the append path missed
+      // (normal flow already appended these via appendFullHistory).
+      if (Array.isArray(next.dropped) && next.dropped.length > 0) {
+        const known = new Set(state.fullEnHistory);
+        const missing = next.dropped.filter(
+          (u) => typeof u === 'string' && u.trim() && !known.has(u),
+        );
+        if (missing.length > 0) state.fullEnHistory = appendFullHistory(state.fullEnHistory, missing);
+      }
       this.setState({});
       return true;
     },

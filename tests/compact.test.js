@@ -73,4 +73,15 @@ describe('compactTranscriptState', () => {
     const res = compactTranscriptState({ en: [] }, 5);
     expect(res.shift).toBe(0);
   });
+
+  it('returns dropped head for summary archive (no silent loss)', () => {
+    const en = Array.from({ length: 500 }, (_, i) => `utterance ${i}`);
+    const res = compactTranscriptState({ en, lastCompressedIdx: 0 }, 120);
+    expect(res.shift).toBe(380);
+    expect(res.en.length).toBe(120);
+    expect(res.dropped.length).toBe(380);
+    expect(res.dropped[0]).toBe('utterance 0');
+    expect(res.dropped[379]).toBe('utterance 379');
+    expect(res.en[0]).toBe('utterance 380');
+  });
 });

@@ -3,7 +3,7 @@
  * Mirrors sidepanel.js:storageGet/storageSet so both runtimes share contract.
  * @module harness/storage.harness
  */
-import { storageGet as coreGet, storageSet as coreSet, isValidUrl, isValidProviderConfig } from '../services/storage.js';
+import { storageGet as coreGet, storageSet as coreSet, isValidUrl, isValidProviderConfig, capForStorage } from '../services/storage.js';
 
 export function createStorageHarness({ chromeStorage } = {}) {
   const _get = chromeStorage?.get ? (k) => chromeStorage.get(k) : null;
@@ -28,7 +28,7 @@ export function createStorageHarness({ chromeStorage } = {}) {
     set: _set ? (obj) => {
       try {
         if (!obj || typeof obj !== 'object') return Promise.resolve();
-        for (const k of Object.keys(obj)) { const v = obj[k]; if (typeof v === 'string' && v.length > 8000) obj[k] = v.slice(-8000); }
+        for (const k of Object.keys(obj)) { obj[k] = capForStorage(k, obj[k]); }
         const p = _set(obj);
         if (p && typeof p.then === 'function') return p.catch((e) => { console.warn('[StorageHarness.set] async', e); });
         return new Promise((res) => _set(obj, () => {

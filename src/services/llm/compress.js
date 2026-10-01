@@ -3,6 +3,12 @@ import { callProviderGeneric } from './provider.js';
 import { storageSet } from '../storage.js';
 import { createCompressionAgent } from '../../harness/agent/compression.agent.js';
 import { isValidCompressSummary } from '../../utils/buildCompressPrompt.js';
+import { sanitizePromptSegment } from '../../utils/sanitizePromptContext.js';
+import { COMPRESSED_SUMMARY_MAX_CHARS } from '../summary/summarySource.js';
+
+/** Max pending-segment chars per compress call. Raised from 8000 so a full
+ * 5-min window (~4-6k chars) never gets tail-truncated and silently marked done. */
+export const COMPRESS_SEGMENT_MAX_CHARS = 12000;
 
 export function createCompressService(store, deps) {
   const { showStatus, showToast, updateCompressToggleUI, isListening, activeAudioTrack } = deps;
@@ -19,10 +25,10 @@ export function createCompressService(store, deps) {
       }
       const pending = s0.finalizedEnPhrases.length - s0.lastCompressedIdx;
       if (pending < 2) { if (isManual) showToast('Not enough sentences to compress', 'default'); return; }
-      // cap segment to avoid prompt too large: keep last ~8000 chars + truncate oldest
+      // cap segment to avoid prompt too large: keep last ~12000 chars + truncate oldest
       let segmentSlice = s0.finalizedEnPhrases.slice(s0.lastCompressedIdx);
       let segment = segmentSlice.join('\n');
-      if (segment.length > 8000) segment = segment.slice(-8000);
+      if (segment.length > COMPRESS_SEGMENT_MAX_CHARS) segment = segment.slice(-COMPRESS_SEGMENT_MAX_CHARS);
       if (!segment.trim()) return;
       // dedupe: if segment is mostly whitespace/punct, skip
       if (segment.trim().length < 10) return;
@@ -39,7 +45,7 @@ export function createCompressService(store, deps) {
         } catch (agentErr) {
           console.warn('[compress agent fallback]', agentErr.message);
           // Fallback to original single-shot prompt if agent fails — also validated
-          const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${segment}"""`;
+          const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${sanitizePromptSegment(segment, COMPRESS_SEGMENT_MAX_CHARS)}"""`;
           summary = await callProviderGeneric(prompt, providerConfig, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
           if (!isValidCompressSummary(summary)) throw new Error('Fallback summary invalid');
         }
@@ -51,7 +57,7 @@ export function createCompressService(store, deps) {
         const s = store.getState();
         const header = `\n[+${pending} utterances @ ${new Date().toLocaleTimeString()}]`;
         let compressedSummary = (s.compressedSummary ? s.compressedSummary + header + '\n' : '') + clean;
-        if (compressedSummary.length > 6000) compressedSummary = compressedSummary.slice(-6000);
+        if (compressedSummary.length > COMPRESSED_SUMMARY_MAX_CHARS) compressedSummary = compressedSummary.slice(-COMPRESSED_SUMMARY_MAX_CHARS);
         const lastCompressedIdx = s.finalizedEnPhrases.length;
         store.setState({ compressedSummary, lastCompressedIdx });
         await storageSet({ compressedSummary, lastCompressedIdx });

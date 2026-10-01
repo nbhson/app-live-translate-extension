@@ -17,7 +17,10 @@
  * @param {number|null|undefined} [st.selectedIdx]
  * @param {number} [st.lastCompressedIdx]
  * @param {number} keepMax - target length after compaction
- * @returns {object} { en, vi, speakers, cache, suggestions, selectedIdx, lastCompressedIdx, shift }
+ * @returns {object} { en, vi, speakers, cache, suggestions, selectedIdx, lastCompressedIdx, shift, dropped }
+ *   `dropped` = oldest EN utterances removed. Caller MUST archive them into the
+ *   append-only full history (see summarySource.appendFullHistory) so AI summary
+ *   keeps covering the whole meeting after compaction.
  */
 export function compactTranscriptState(st, keepMax) {
   const en = Array.isArray(st?.en) ? st.en.slice() : [];
@@ -36,6 +39,7 @@ export function compactTranscriptState(st, keepMax) {
     selectedIdx: null,
     lastCompressedIdx: Math.max(0, (Number(st.lastCompressedIdx) || 0) - n),
     shift: n,
+    dropped: en.slice(0, n),
   };
 
   if (Array.isArray(st.cache)) {

@@ -1,11 +1,11 @@
-import { sanitizePromptContext } from './sanitizePromptContext.js';
+import { sanitizePromptContext, sanitizePromptSegment } from './sanitizePromptContext.js';
 
 export function buildCompressPrompt({ segment, pendingCount, compressedSummary = '', recentQuestions = [] }) {
   const qs = Array.isArray(recentQuestions) ? recentQuestions.join(' | ') : String(recentQuestions || '');
   const recentQs = qs.trim() || '(none yet)';
   const existing = compressedSummary
-    ? `\nExisting compressed history (keep continuity, don't duplicate):\n"""${sanitizePromptContext(compressedSummary.slice(-2000))}"""` : '';
-  const safeSegment = sanitizePromptContext(String(segment || '').slice(-8000));
+    ? `\nExisting compressed history (keep continuity, don't duplicate):\n"""${sanitizePromptSegment(compressedSummary, 2000)}"""` : '';
+  const safeSegment = sanitizePromptSegment(segment, 12000);
   const prompt = `You are a compression agent for a live EN→VI meeting that supports answering questions.
 
 Goal: Compress the pending transcript segment into 3-5 bullet points (max 150 words, English) that PRESERVE information most useful for answering future questions. Prioritize: names, topics, decisions, questions asked, facts that could be referenced later.${existing}

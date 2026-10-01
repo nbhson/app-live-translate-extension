@@ -16,6 +16,14 @@ const CONFIG = Object.freeze({
   COMPRESS_INTERVAL_MS: 5 * 60 * 1000,
   COMPRESS_RECENT_KEEP: 10,
   COMPRESS_MAX_CHARS: 3000,
+  // Summary coverage (fix: 1h meeting lost its first 30m):
+  // - FULL_HISTORY_MAX keeps an append-only archive of every finalized utterance
+  // - SUMMARY_CHUNK_CHARS splits long meetings into map-reduce chunks (no truncation)
+  // - COMPRESSED_SUMMARY_MAX keeps rolling bullets for ~2h of 5-min compressions
+  FULL_HISTORY_MAX_UTTERANCES: 5000,
+  SUMMARY_CHUNK_CHARS: 12000,
+  COMPRESSED_SUMMARY_MAX_CHARS: 15000,
+  COMPRESS_SEGMENT_MAX_CHARS: 12000,
   SPEAKER_VAD_RMS_THRESH: 0.012,
   SPEAKER_MIN_PAUSE_MS: 350,
   SPEAKER_MIN_SPEECH_MS: 600,
@@ -45,6 +53,10 @@ const MAX_CONCURRENT_TRANSLATE = CONFIG.MAX_CONCURRENT_TRANSLATE;
 const COMPRESS_INTERVAL_MS = CONFIG.COMPRESS_INTERVAL_MS;
 const COMPRESS_RECENT_KEEP = CONFIG.COMPRESS_RECENT_KEEP;
 const COMPRESS_MAX_CHARS = CONFIG.COMPRESS_MAX_CHARS;
+const FULL_HISTORY_MAX_UTTERANCES = CONFIG.FULL_HISTORY_MAX_UTTERANCES;
+const SUMMARY_CHUNK_CHARS = CONFIG.SUMMARY_CHUNK_CHARS;
+const COMPRESSED_SUMMARY_MAX_CHARS = CONFIG.COMPRESSED_SUMMARY_MAX_CHARS;
+const COMPRESS_SEGMENT_MAX_CHARS = CONFIG.COMPRESS_SEGMENT_MAX_CHARS;
 const SPEAKER_VAD_RMS_THRESH = CONFIG.SPEAKER_VAD_RMS_THRESH;
 const SPEAKER_MIN_PAUSE_MS = CONFIG.SPEAKER_MIN_PAUSE_MS;
 const SPEAKER_MIN_SPEECH_MS = CONFIG.SPEAKER_MIN_SPEECH_MS;
@@ -61,6 +73,10 @@ const State = {
   finalizedEnPhrases: /** @type {string[]} */([]),
   finalizedViPhrases: /** @type {string[]} */([]),
   utteranceSpeakers: /** @type {number[]} */([]),
+  // Append-only archive of EVERY finalized EN utterance (never compacted).
+  // AI summary reads this so hour-long meetings keep head content after the
+  // live window above is compacted. Capped at FULL_HISTORY_MAX_UTTERANCES.
+  fullEnHistory: /** @type {string[]} */([]),
   questionSuggestions: /** @type {Record<number, {state:string,question:string,answers:string[],structures:string[],error?:string}>} */({}),
   suggestEnabled: true,
   utteranceDomCache: /** @type {Array<null|{root:HTMLElement,body:HTMLElement,colEn:HTMLElement,colVi:HTMLElement,enText:HTMLElement,viText:HTMLElement,copyEn:HTMLButtonElement,copyVi:HTMLButtonElement,suggestCard:HTMLElement,isLive:boolean,_speakerId:number}>} */([]),
@@ -98,6 +114,7 @@ let silenceTimer = State.silenceTimer;
 let finalizedEnPhrases = State.finalizedEnPhrases;
 let finalizedViPhrases = State.finalizedViPhrases;
 let utteranceSpeakers = State.utteranceSpeakers;
+let fullEnHistory = State.fullEnHistory;
 let questionSuggestions = State.questionSuggestions;
 let suggestEnabled = State.suggestEnabled;
 let utteranceDomCache = State.utteranceDomCache;
@@ -182,6 +199,7 @@ function syncState() {
   State.recognition = recognition; State.isListening = isListening; State.lastFinalIndex = lastFinalIndex;
   State.activeAudioTrack = activeAudioTrack; State.finalizedOffset = finalizedOffset; State.silenceTimer = silenceTimer;
   State.finalizedEnPhrases = finalizedEnPhrases; State.finalizedViPhrases = finalizedViPhrases;
+  State.fullEnHistory = fullEnHistory;
   State.utteranceSpeakers = utteranceSpeakers; State.questionSuggestions = questionSuggestions;
   State.suggestEnabled = suggestEnabled; State.utteranceDomCache = utteranceDomCache;
   State.pendingRenderQueue = pendingRenderQueue; State.renderScheduled = renderScheduled;
@@ -282,9 +300,11 @@ function escapeHtml(str) { if (!str) return ''; return String(str).replace(/&/g,
 function debounce(fn, ms) { let t=null; const d=(...a)=>{ if(t) clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; d.cancel=()=>{ if(t) clearTimeout(t); t=null; }; return d; }
 /** Promise wrapper for chrome.storage — validated, lastError aware, size capped */
 function storageGet(keys) { try { const p = chrome.storage.local.get(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageGet]',e);return {};}); return new Promise((res)=> chrome.storage.local.get(keys, (r)=>{ if(chrome.runtime.lastError){console.warn('[storageGet]',chrome.runtime.lastError.message); res({});} else res(r||{});})); } catch(e){ console.warn('[storageGet]',e); return Promise.resolve({}); } }
-function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'&&v.length>8000) obj[k]=v.slice(-8000);} const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
+function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'){ const cap = k==='compressedSummary' ? COMPRESSED_SUMMARY_MAX_CHARS + 5000 : 8000; if(v.length>cap) obj[k]=v.slice(-cap); } } const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
 function isValidUrl(s) { try { new URL(s); return true; } catch { return false; } }
 function sanitizePromptContext(s) { return String(s||'').trim().slice(0,600).replace(/"""/g,'"\'"').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/[ \t]{3,}/g,' ').trim(); }
+/** Sanitize LARGE transcript segments (no 600 cap) — same injection protection, keeps tail up to maxChars. Mirror of src/utils/sanitizePromptContext.js sanitizePromptSegment(). */
+function sanitizePromptSegmentSide(s, maxChars) { const cap = Math.max(1000, Number(maxChars) || 12000); let t = String(s||'').trim(); if (t.length > cap) t = t.slice(-cap); return t.replace(/"""/g,'"\'"').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/[ \t]{3,}/g,' ').trim(); }
 
 /**
  * Load persisted suggest context prompt (validated, no throw).
@@ -446,7 +466,7 @@ async function loadCompressPref() {
   try {
     const r = await storageGet([CONFIG.STORAGE_KEYS.compressEnabled, CONFIG.STORAGE_KEYS.compressedSummary, CONFIG.STORAGE_KEYS.lastCompressedIdx]);
     if (typeof r[CONFIG.STORAGE_KEYS.compressEnabled] === 'boolean') { compressEnabled = r[CONFIG.STORAGE_KEYS.compressEnabled]; const t = document.getElementById('compressToggle'); if (t) t.checked = compressEnabled; }
-    if (typeof r[CONFIG.STORAGE_KEYS.compressedSummary] === 'string') compressedSummary = r[CONFIG.STORAGE_KEYS.compressedSummary].slice(0, 6000);
+    if (typeof r[CONFIG.STORAGE_KEYS.compressedSummary] === 'string') compressedSummary = r[CONFIG.STORAGE_KEYS.compressedSummary].slice(-COMPRESSED_SUMMARY_MAX_CHARS);
     const idxRaw = r[CONFIG.STORAGE_KEYS.lastCompressedIdx]; if (Number.isFinite(Number(idxRaw))) lastCompressedIdx = Math.max(0, Math.floor(Number(idxRaw)));
     syncState(); updateCompressToggleUI(); if (compressEnabled && isListening) startCompressTimer();
   } catch (e) { console.warn('[loadCompressPref]', e); }
@@ -1531,7 +1551,7 @@ async function performCompression(isManual = false) {
     return;
   }
   let segment = finalizedEnPhrases.slice(lastCompressedIdx).join('\n');
-  if (segment.length > 8000) segment = segment.slice(-8000);
+  if (segment.length > COMPRESS_SEGMENT_MAX_CHARS) segment = segment.slice(-COMPRESS_SEGMENT_MAX_CHARS);
   if (!segment.trim() || segment.trim().length < 10) return;
   compressInProgress = true;
   showStatus('Compressing history… (agent)');
@@ -1549,8 +1569,8 @@ async function performCompression(isManual = false) {
     }
     function _buildCompressPrompt(seg, cnt, existingSummary, recentQsArr) {
       const qs = recentQsArr.join(' | ') || '(none yet)';
-      const existing = existingSummary ? `\nExisting compressed history (keep continuity, don't duplicate):\n"""${sanitizePromptContext(existingSummary.slice(-2000))}"""` : '';
-      const safeSeg = sanitizePromptContext(String(seg||'').slice(-8000));
+      const existing = existingSummary ? `\nExisting compressed history (keep continuity, don't duplicate):\n"""${sanitizePromptSegmentSide(existingSummary, 2000)}"""` : '';
+      const safeSeg = sanitizePromptSegmentSide(seg, COMPRESS_SEGMENT_MAX_CHARS);
       const prompt = `You are a compression agent for a live EN→VI meeting that supports answering questions.\n\nGoal: Compress the pending transcript segment into 3-5 bullet points (max 150 words, English) that PRESERVE information most useful for answering future questions. Prioritize: names, topics, decisions, questions asked, facts that could be referenced later.${existing}\n\nRecent questions in this meeting (prioritize preserving context for similar future questions):\n"""${sanitizePromptContext(qs)}"""\n\nPending segment to compress (${cnt} utterances):\n"""${safeSeg}"""\n\nOutput ONLY bullet points (each starting with "- "), no intro, no extra text.`;
       const systemPrompt = 'You are a precise meeting compression agent. Output only bullet points useful for future QA.';
       return { prompt, systemPrompt };
@@ -1563,7 +1583,7 @@ async function performCompression(isManual = false) {
       if (!_isValidCompressSummary(summary)) throw new Error('Agent returned invalid summary');
     } catch (agentErr) {
       console.warn('[compress agent fallback]', agentErr.message);
-      const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${sanitizePromptContext(segment)}"""`;
+      const prompt = `Summarize this conversation segment concisely. Keep key facts, names, topics, questions, decisions, and any context needed to answer future questions. Output 3-5 bullet points, max 150 words, in English. No extra intro.\n\nSegment:\n"""${sanitizePromptSegmentSide(segment, COMPRESS_SEGMENT_MAX_CHARS)}"""`;
       summary = await callProviderGeneric(prompt, { temperature: 0.3, maxTokens: 300, systemPrompt: 'You are a concise meeting summarizer. Output only bullet points.' });
       if (!_isValidCompressSummary(summary)) throw new Error('Fallback summary invalid');
     }
@@ -1571,7 +1591,7 @@ async function performCompression(isManual = false) {
     if (!clean) { if (isManual) showToast('Compression returned empty','error'); return; }
     const header = `\n[+${pendingCount} utterances @ ${new Date().toLocaleTimeString()}]`;
     compressedSummary = (compressedSummary ? compressedSummary + header + '\n' : '') + clean;
-    if (compressedSummary.length > 6000) compressedSummary = compressedSummary.slice(-6000);
+    if (compressedSummary.length > COMPRESSED_SUMMARY_MAX_CHARS) compressedSummary = compressedSummary.slice(-COMPRESSED_SUMMARY_MAX_CHARS);
     lastCompressedIdx = finalizedEnPhrases.length;
     try { await storageSet({ compressedSummary, lastCompressedIdx }); } catch {}
     syncState();
@@ -2115,6 +2135,12 @@ async function finalizeText(text) {
         const removedEn = finalizedEnPhrases.pop();
         const removedVi = finalizedViPhrases.pop();
         utteranceSpeakers.pop();
+        // keep the summary archive in sync: drop the archived copy so the
+        // merged `combined` text (tracked below) replaces it instead of duplicating
+        if (removedEn && fullEnHistory.length > 0 && fullEnHistory[fullEnHistory.length - 1] === removedEn) {
+          fullEnHistory.pop();
+          syncState();
+        }
         const removedCache = utteranceDomCache.pop();
         if (removedCache && removedCache.root && removedCache.root.parentNode) {
           try { removedCache.root.remove(); } catch {}
@@ -2205,6 +2231,8 @@ async function finalizeText(text) {
     // but only alternate when we already detected a speaker switch recently; otherwise keep same
     utteranceSpeakers.push(baseSpeaker);
   });
+  // Archive for AI summary (append-only — survives compactTranscriptMemory)
+  trackFullHistory(utterances);
   // Push placeholder to VI
   utterances.forEach(() => finalizedViPhrases.push('…'));
   // Capture stickiness before appending new nodes (newest on top, so stick to top)
@@ -2314,6 +2342,8 @@ function promoteLiveToFinal(enText) {
     lastCache.root.classList.add('was-live');
     const en = enText || finalizedEnPhrases[utteranceDomCache.length - 1] || '';
     finalizedEnPhrases[utteranceDomCache.length - 1] = en;
+    // Archive for AI summary (live slot's '' placeholder was never tracked)
+    trackFullHistory(en);
     if (lastCache.enText) {
       lastCache.enText.textContent = en;
       lastCache.enText.classList.remove('typing');
@@ -2763,9 +2793,31 @@ function appendUtterance(idx) {
 }
 
 /**
+ * Append-only full-history archive for AI summary.
+ * Every finalized EN utterance is tracked here in chronological order; this array
+ * is NEVER spliced by compaction (only capped at FULL_HISTORY_MAX_UTTERANCES ≈
+ * 4-6h of speech), so hour-long meetings keep their first 30 minutes.
+ * Mirror of src/services/summary/summarySource.js appendFullHistory().
+ * @param {string|string[]} texts
+ */
+function trackFullHistory(texts) {
+  const arr = Array.isArray(texts) ? texts : [texts];
+  for (const t of arr) {
+    if (typeof t !== 'string' || !t.trim()) continue;
+    fullEnHistory.push(t);
+  }
+  if (fullEnHistory.length > FULL_HISTORY_MAX_UTTERANCES) {
+    fullEnHistory.splice(0, fullEnHistory.length - FULL_HISTORY_MAX_UTTERANCES);
+  }
+  syncState();
+}
+
+/**
  * Memory guard — drop oldest utterances once transcript exceeds 2x DOM cap,
  * then re-index arrays, DOM cache, suggestion map, selected idx, compress pointer.
  * Mirror of src/services/transcript/compact.js compactTranscriptState().
+ * The dropped head is backfilled into fullEnHistory (upgrade/missed paths) so
+ * AI summary keeps covering the whole meeting.
  * @returns {number} shift count (0 = nothing dropped)
  */
 function compactTranscriptMemory() {
@@ -2773,6 +2825,17 @@ function compactTranscriptMemory() {
   if (len <= MAX_DOM_UTTERANCES * 2) return 0;
   const n = len - MAX_DOM_UTTERANCES;
   if (n <= 0) return 0;
+  // Backfill dropped head into the summary archive (covers sessions compacted
+  // before trackFullHistory existed or any missed append path — no duplicates
+  // in normal flow because those items are already tracked at finalize time).
+  const dropped = finalizedEnPhrases.slice(0, n);
+  if (fullEnHistory.length === 0) {
+    trackFullHistory(dropped);
+  } else {
+    const known = new Set(fullEnHistory);
+    const missing = dropped.filter((u) => typeof u === 'string' && u.trim() && !known.has(u));
+    if (missing.length > 0) trackFullHistory(missing);
+  }
   finalizedEnPhrases.splice(0, n);
   finalizedViPhrases.splice(0, n);
   utteranceSpeakers.splice(0, n);
@@ -2962,6 +3025,7 @@ async function clearContent() {
   finalizedEnPhrases = [];
   finalizedViPhrases = [];
   utteranceSpeakers = [];
+  fullEnHistory = [];
   questionSuggestions = {};
   utteranceDomCache = [];
   currentSpeakerId = 0;
@@ -2996,6 +3060,7 @@ async function clearContent() {
   // reset compress state as well
   compressedSummary = "";
   lastCompressedIdx = 0;
+  syncState();
   try { await chrome.storage.local.set({ compressedSummary: "", lastCompressedIdx: 0 }); } catch {}
   updateCompressToggleUI();
   updateWordCounts();
@@ -3187,7 +3252,10 @@ function setupSummaryFeatures() {
 
 // Call Custom Provider API to generate summary (supports Gemini + OpenAI-compatible)
 async function generateSummary() {
-  const englishText = getFullEnglishText();
+  // Whole-meeting source: append-only full history (survives compaction) +
+  // early compressed bullets (covers pre-fix compacted heads).
+  const utterances = getSummaryUtterances();
+  const englishText = utterances.join(' ').trim();
   if (!englishText || englishText.trim() === '' ) {
     alert('No meeting content to summarize. Please record first.');
     return;
@@ -3219,90 +3287,27 @@ async function generateSummary() {
 
   const lang = summaryLangSelect.value;
   const detail = summaryDetailSelect.value;
-
-  let prompt = '';
-  if (lang === 'vi') {
-    prompt = `You are a professional meeting assistant. Here is the meeting transcript in English:\n\n`;
-    prompt += `"""\n${englishText}\n"""\n\n`;
-    prompt += `Please generate a meeting summary in **Vietnamese** with the following requirements:\n`;
-    if (detail === 'bullets') {
-      prompt += `- Format as detailed bullet points grouped by topics or main parts discussed.\n`;
-      prompt += `- Highlight key arguments or points raised by participants.\n`;
-    } else if (detail === 'short') {
-      prompt += `- Write a highly concise summary (max 2-3 short paragraphs) explaining the core topic and final conclusions.\n`;
-    } else if (detail === 'action') {
-      prompt += `- Extract and list Action Items, including who is responsible (if mentioned) and deadlines (if mentioned).\n`;
-      prompt += `- Structure them clearly as a checklist or to-do list.\n`;
-    }
-    prompt += `- Format the output using clean Markdown, using headers (h2, h3) and bold text for emphasis. Do not use HTML.`;
-  } else {
-    prompt = `You are a professional meeting assistant. Here is the transcript of the meeting in English:\n\n`;
-    prompt += `"""\n${englishText}\n"""\n\n`;
-    prompt += `Please generate a meeting summary in **English** with the following requirements:\n`;
-    if (detail === 'bullets') {
-      prompt += `- Format as detailed bullet points grouped by topics or main parts discussed.\n`;
-      prompt += `- Highlight key arguments or points raised by participants.\n`;
-    } else if (detail === 'short') {
-      prompt += `- Write a highly concise summary (max 2-3 short paragraphs) explaining the core topic and final conclusions.\n`;
-    } else if (detail === 'action') {
-      prompt += `- Extract and list Action Items, including who is responsible (if mentioned) and deadlines (if mentioned).\n`;
-      prompt += `- Structure them clearly as a checklist or to-do list.\n`;
-    }
-    prompt += `- Format the output using clean Markdown, using headers (h2, h3) and bold text for emphasis. Do not use HTML.`;
-  }
-
-  const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
   const model = providerConfig.model;
-  const apiKey = providerConfig.apiKey;
-  const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+
+  // Map-reduce: split long meetings into chunks so the head is never truncated.
+  // Single-chunk path keeps the exact previous single-call behavior.
+  const chunks = splitSummaryChunksSide(utterances);
 
   try {
     let candidateText = '';
-
-    if (isGemini) {
-      // Gemini native format
-      const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-      const headers = { 'Content-Type': 'application/json' };
-      // if baseUrl is custom but still Gemini format, use key query
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
-      });
-      if (!response.ok) {
-        let errMsg = `HTTP ${response.status}`;
-        try { const errData = await response.json(); errMsg = errData.error?.message || errMsg; } catch {}
-        throw new Error(errMsg);
-      }
-      const data = await response.json();
-      candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (chunks.length <= 1) {
+      const prompt = buildSummaryPromptSide(englishText, lang, detail, 0, 1);
+      candidateText = await callSummaryLLMSide(prompt);
     } else {
-      // OpenAI-compatible /chat/completions
-      const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
-      const headers = { 'Content-Type': 'application/json' };
-      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-      const body = {
-        model,
-        messages: [
-          { role: 'system', content: 'You are a helpful meeting assistant that outputs clean Markdown.' },
-          { role: 'user', content: prompt }
-        ],
-        temperature: 0.7
-      };
-      const response = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body)
-      });
-      if (!response.ok) {
-        let errMsg = `HTTP ${response.status}`;
-        try { const errData = await response.json(); errMsg = errData.error?.message || errData.error || errMsg; } catch {}
-        throw new Error(errMsg);
+      const partSummaries = [];
+      for (let i = 0; i < chunks.length; i++) {
+        if (loadingP) loadingP.textContent = `Summarizing part ${i + 1}/${chunks.length} with ${model}…`;
+        const partPrompt = buildSummaryPromptSide(chunks[i].join('\n'), lang, detail, i, chunks.length);
+        partSummaries.push(await callSummaryLLMSide(partPrompt));
       }
-      const data = await response.json();
-      candidateText = data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '';
-      // Ollama sometimes returns { message: { content } } or array
-      if (!candidateText && data.message?.content) candidateText = data.message.content;
+      if (loadingP) loadingP.textContent = `Merging ${chunks.length} parts with ${model}…`;
+      const mergePrompt = buildSummaryMergePromptSide(partSummaries, lang, detail);
+      candidateText = await callSummaryLLMSide(mergePrompt);
     }
 
     if (!candidateText) throw new Error('API returned no content.');
@@ -3523,10 +3528,157 @@ function setupKeyboardShortcuts() {
   }
 }
 
+/**
+ * Authoritative utterance list for AI summary — chronological, whole meeting.
+ * Prefers the append-only fullEnHistory (survives compactTranscriptMemory);
+ * falls back to the live window for legacy sessions.
+ * Mirror of src/services/summary/summarySource.js pickSummaryUtterances().
+ * @returns {string[]}
+ */
+function getSummaryUtterances() {
+  const full = Array.isArray(fullEnHistory) ? fullEnHistory.filter(Boolean) : [];
+  if (full.length > 0) return full;
+  return finalizedEnPhrases.filter(Boolean);
+}
+
 /** @returns {string} */
 function getFullEnglishText() {
-  const final = finalizedEnPhrases.filter(Boolean).join(' ');
-  return final.trim();
+  return getSummaryUtterances().join(' ').trim();
+}
+
+/**
+ * Split utterances into chronological chunks for map-reduce summary.
+ * Every utterance is kept (never truncated) — long meetings produce more chunks.
+ * Mirror of src/services/summary/summarySource.js splitSummaryChunks().
+ * @param {string[]} utterances
+ * @returns {string[][]}
+ */
+function splitSummaryChunksSide(utterances) {
+  const list = Array.isArray(utterances) ? utterances.filter(Boolean) : [];
+  const cap = Math.max(1000, SUMMARY_CHUNK_CHARS);
+  if (list.length === 0) return [];
+  const chunks = [];
+  let cur = [];
+  let curLen = 0;
+  for (const u of list) {
+    const add = u.length + 1;
+    if (cur.length > 0 && curLen + add > cap) { chunks.push(cur); cur = []; curLen = 0; }
+    cur.push(u);
+    curLen += add;
+  }
+  if (cur.length > 0) chunks.push(cur);
+  return chunks;
+}
+
+/**
+ * Build the summary prompt for one transcript chunk. First chunk also carries
+ * the early compressed history (covers sessions compacted before full history).
+ * @param {string} chunkText
+ * @param {string} lang 'vi' | 'en'
+ * @param {string} detail 'bullets' | 'short' | 'action'
+ * @param {number} idx chunk index (0-based)
+ * @param {number} total total chunks
+ * @returns {string}
+ */
+function buildSummaryPromptSide(chunkText, lang, detail, idx, total) {
+  const outLang = lang === 'vi' ? 'Vietnamese' : 'English';
+  const early = (idx === 0 && typeof compressedSummary === 'string' && compressedSummary.trim())
+    ? `Earlier part of this same meeting (already-compressed bullets, may overlap with the transcript below — deduplicate, prefer transcript details):\n"""\n${compressedSummary.trim().slice(0, COMPRESSED_SUMMARY_MAX_CHARS)}\n"""\n\n`
+    : '';
+  let req = '';
+  if (detail === 'bullets') {
+    req = `- Format as detailed bullet points grouped by topics or main parts discussed.\n- Highlight key arguments or points raised by participants.\n`;
+  } else if (detail === 'short') {
+    req = total > 1
+      ? `- Write a concise paragraph (max 5 sentences) covering this part's core topic and conclusions.\n`
+      : `- Write a highly concise summary (max 2-3 short paragraphs) explaining the core topic and final conclusions.\n`;
+  } else if (detail === 'action') {
+    if (total > 1) {
+      req = `- Extract Action Items from THIS part (who + deadline if mentioned). Empty list if none.\n`;
+    } else {
+      req = `- Extract and list Action Items, including who is responsible (if mentioned) and deadlines (if mentioned).\n- Structure them clearly as a checklist or to-do list.\n`;
+    }
+  }
+  const partLabel = total > 1 ? ` (part ${idx + 1}/${total}, chronological)` : '';
+  const intro = lang === 'vi'
+    ? `You are a professional meeting assistant. Here is the meeting transcript in English`
+    : `You are a professional meeting assistant. Here is the transcript of the meeting in English`;
+  return `${intro}${partLabel}:\n\n${early}"""\n${chunkText}\n"""\n\nPlease generate a meeting summary in **${outLang}** with the following requirements:\n${req}- Format the output using clean Markdown, using headers (h2, h3) and bold text for emphasis. Do not use HTML.`;
+}
+
+/**
+ * Merge per-chunk summaries into one whole-meeting summary prompt.
+ * @param {string[]} chunkSummaries
+ * @param {string} lang
+ * @param {string} detail
+ * @returns {string}
+ */
+function buildSummaryMergePromptSide(chunkSummaries, lang, detail) {
+  const outLang = lang === 'vi' ? 'Vietnamese' : 'English';
+  const parts = chunkSummaries.map((s, i) => `--- Part ${i + 1}/${chunkSummaries.length} summary ---\n${s}`).join('\n\n');
+  let req = '';
+  if (detail === 'bullets') {
+    req = `- Format as detailed bullet points grouped by topics or main parts discussed.\n- Highlight key arguments or points raised by participants.\n`;
+  } else if (detail === 'short') {
+    req = `- Write a highly concise summary (max 2-3 short paragraphs) explaining the core topic and final conclusions.\n`;
+  } else if (detail === 'action') {
+    req = `- Extract and list Action Items, including who is responsible (if mentioned) and deadlines (if mentioned).\n- Structure them clearly as a checklist or to-do list.\n`;
+  }
+  return `You are a professional meeting assistant. Below are chronological per-part summaries of ONE meeting (part 1 = earliest).\n\n${parts}\n\nCombine them into a single coherent meeting summary in **${outLang}** covering the WHOLE meeting from start to finish (do not drop early parts):\n${req}- Format the output using clean Markdown, using headers (h2, h3) and bold text for emphasis. Do not use HTML.`;
+}
+
+/**
+ * Single LLM call for summary (Gemini native or OpenAI-compatible).
+ * @param {string} promptText
+ * @returns {Promise<string>} candidate markdown text
+ */
+async function callSummaryLLMSide(promptText) {
+  const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
+  const model = providerConfig.model;
+  const apiKey = providerConfig.apiKey;
+  const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  let candidateText = '';
+  if (isGemini) {
+    const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
+    });
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try { const errData = await response.json(); errMsg = errData.error?.message || errMsg; } catch {}
+      throw new Error(errMsg);
+    }
+    const data = await response.json();
+    candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  } else {
+    const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: 'You are a helpful meeting assistant that outputs clean Markdown.' },
+          { role: 'user', content: promptText }
+        ],
+        temperature: 0.7
+      })
+    });
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try { const errData = await response.json(); errMsg = errData.error?.message || errData.error || errMsg; } catch {}
+      throw new Error(errMsg);
+    }
+    const data = await response.json();
+    candidateText = data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '';
+    if (!candidateText && data.message?.content) candidateText = data.message.content;
+  }
+  if (!candidateText) throw new Error('API returned no content.');
+  return candidateText;
 }
 
 /** @returns {string} */

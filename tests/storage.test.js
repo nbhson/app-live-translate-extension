@@ -69,6 +69,19 @@ describe('storageSet', () => {
     global.chrome.storage.local.set = () => Promise.resolve();
   });
 
+  it('keeps compressedSummary up to 20000 (hour-long meetings)', async () => {
+    let saved = null;
+    global.chrome.storage.local.set = (obj) => {
+      saved = obj;
+      return Promise.resolve();
+    };
+    await storageSet({ compressedSummary: 'y'.repeat(9000) });
+    expect(saved.compressedSummary.length).toBe(9000);
+    await storageSet({ compressedSummary: 'y'.repeat(25000) });
+    expect(saved.compressedSummary.length).toBe(20000);
+    global.chrome.storage.local.set = () => Promise.resolve();
+  });
+
   it('handles lastError via callback', async () => {
     global.chrome.storage.local.set = (obj, cb) => {
       global.chrome.runtime.lastError = { message: 'quota' };

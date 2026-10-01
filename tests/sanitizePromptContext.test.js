@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizePromptContext } from '../src/utils/sanitizePromptContext.js';
+import { sanitizePromptContext, sanitizePromptSegment } from '../src/utils/sanitizePromptContext.js';
 
 describe('sanitizePromptContext', () => {
   it('trim and slice', () => {
@@ -17,5 +17,21 @@ describe('sanitizePromptContext', () => {
     // should break triple quotes to prevent prompt injection
     expect(sanitizePromptContext('a """ b')).toBe('a "\'" b');
     expect(sanitizePromptContext('a """ b').includes('"""')).toBe(false);
+  });
+});
+
+describe('sanitizePromptSegment', () => {
+  it('keeps a full 5-minute window (~2700 chars), not just 600', () => {
+    const seg = Array.from({ length: 60 }, (_, i) => `sentence ${i} about launch decisions and owners`).join(' ');
+    expect(seg.length).toBeGreaterThan(2000);
+    const out = sanitizePromptSegment(seg);
+    expect(out.length).toBeGreaterThan(2000);
+    expect(out).toContain('sentence 0');
+    expect(out).toContain('sentence 59');
+  });
+
+  it('still neutralizes triple quotes and caps tail', () => {
+    expect(sanitizePromptSegment('a """ b').includes('"""')).toBe(false);
+    expect(sanitizePromptSegment('x'.repeat(20000), 12000).length).toBeLessThanOrEqual(12000);
   });
 });

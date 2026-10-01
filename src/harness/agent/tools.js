@@ -44,7 +44,7 @@ export async function executeCompressionTool(name, args, ctx) {
       return { compressedSummary: s.compressedSummary || '', lastCompressedIdx: s.lastCompressedIdx };
     case 'get_pending_segment': {
       const segment = s.finalizedEnPhrases.slice(s.lastCompressedIdx).join('\n');
-      return { segment: segment.slice(-8000), pendingCount: s.finalizedEnPhrases.length - s.lastCompressedIdx };
+      return { segment: segment.slice(-12000), pendingCount: s.finalizedEnPhrases.length - s.lastCompressedIdx };
     }
     case 'get_recent_questions': {
       const entries = Object.entries(s.questionSuggestions || {});
