@@ -1,13 +1,13 @@
 # Harness & Compression Agent — Live Translate Extension
 
-> Version: 1.3.1 · Date: 2026-09-29 · Scope: Chrome Extension (MV3) — `sidepanel.js` + `src/` + `background.js`
+> Version: 1.4.0 · Date: 2026-10-03 · Scope: Chrome Extension (MV3) — `sidepanel.js` + `src/` + `background.js`
 > Agent scope: **Compression + QuestionDetect supplement** (Suggestion/Summary giữ nguyên prompt chính) · Dock resizable + collapsible prompt
 
 ## 1. Tổng quan
 
 ### 1.1 Vì sao cần tầng Harness?
 
-Trước harness, mọi I/O (`chrome.storage`, `chrome.tabCapture`, `SpeechRecognition`, `AudioContext`, `fetch`) được gọi trực tiếp trong `sidepanel.js:1` (~2713 dòng) và `src/services/*`. Hậu quả:
+Trước harness, mọi I/O (`chrome.storage`, `chrome.tabCapture`, `SpeechRecognition`, `AudioContext`, `fetch`) được gọi trực tiếp trong `sidepanel.js` (~2713 dòng lúc đó, nay ~4637 dòng sau UI 1.4.0) và `src/services/*`. Hậu quả:
 
 * **Không test được** — `src/services/speech/vad.js:0%`, `src/state/store.js:0%`, `src/ui/*:0%` coverage.
 * **2 runtime song song** — `sidepanel.js` (non-module, runtime thật) và `src/` (ESM, dead-code, chỉ dùng cho test). Sửa một nơi phải mirror thủ công (`README.md:48`).
@@ -32,8 +32,8 @@ Trước harness, mọi I/O (`chrome.storage`, `chrome.tabCapture`, `SpeechRecog
 ### 1.2 Nguyên tắc không-break
 
 * **UI/UX giữ nguyên 100%** — `sidepanel.html` vẫn load `sidepanel.js` (non-module, `defer`). Không đổi `manifest.json:16`.
-* **Song song an toàn** — `src/main.js` nay là ESM entry `dist/main.js` (79.57 kB, gzip 24.42 kB) nhưng `sidepanel.html:323` vẫn comment để không ảnh hưởng runtime cũ. Khi sẵn sàng, chỉ cần bật `<script type="module" src="dist/main.js">`.
-* **159 tests pass** — 143 cũ + 8 harness + 8 compression-agent. Không sửa logic `isQuestion`, `splitIntoUtterances`, `translate`, `provider`, `batch`, `cache`.
+* **Song song an toàn** — `src/main.js` nay là ESM entry `dist/main.js` (~101 kB) nhưng `sidepanel.html` vẫn chưa load module để không ảnh hưởng runtime cũ. Khi sẵn sàng, chỉ cần bật `<script type="module" src="dist/main.js">`.
+* **201 tests pass (24 suites)** — gồm 8 harness + 8 compression-agent + 5 portedFeatures (tone/memory/summaryLang/quickReplies) + 3 stripSttCarryRepeat + 7 summarySource. Không sửa logic `isQuestion`, `splitIntoUtterances`, `translate`, `provider`, `batch`, `cache`.
 * **sidepanel.js thêm Harness nhưng không xóa function cũ** — `Harness` ở `sidepanel.js:139` chỉ là facade delegate tới các function đã có (`storageGet`, `fetchWithRetrySidepanel`, `setupSpeakerMonitor`...), đảm bảo hoisting vẫn pass `node --check`.
 * **Compression Agent** (`src/harness/agent/*`) — LLM + harness tools cho compress, không loop (single-shot). `sidepanel.js:1055` và `src/services/llm/compress.js:30` đều dùng agent, fallback về prompt cũ nếu agent fail.
 
@@ -241,7 +241,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-  T[setInterval 5m / Compress now] --> H[Harness.agent.gatherCompressionContext]
+  T[setInterval 10m / Compress now] --> H[Harness.agent.gatherCompressionContext]
   H --> T1[get_compressed_history]
   H --> T2[get_pending_segment]
   H --> T3[get_recent_questions]
@@ -268,8 +268,8 @@ sidepanel.js:toggleListening -> Harness.chrome.sendMessage -> background.js:isCa
 
 ```bash
 npm install
-npx vitest run                 # 20 suites / 166 tests
-npx vitest run --coverage      # harness + agent + questionDetect
+npx vitest run                 # 24 suites / 201 tests
+npx vitest run --coverage      # harness + agent + questionDetect + summarySource + portedFeatures
 npx vitest run tests/harness.test.js tests/compressionAgent.test.js tests/contextInspector.test.js
 node --check sidepanel.js && node --check background.js
 ```
@@ -282,7 +282,7 @@ node --check sidepanel.js && node --check background.js
 ### 5.2 Build
 
 ```bash
-npm run build   # vite build → dist/main.js 83.22 kB / gzip 25.58 kB (was 79.57 kB)
+npm run build   # vite build → dist/main.js ~101 kB (was 83.22 kB / 79.57 kB)
 ```
 
 `vite.config.js:1` entry `src/main.js` (ESM). `vitest.config.js:1` coverage include `src/**/*.js` (đã include `src/harness`).
@@ -305,13 +305,16 @@ npm run build   # vite build → dist/main.js 83.22 kB / gzip 25.58 kB (was 79.5
 | `sidepanel.js:showToast` (1.3.1) | `innerHTML` → `textContent` (mirror `src/ui/components/toast.js`) | Không — cùng output, hết XSS vector từ error/API message |
 | `src/main.js` + `compress.js` (1.3.1) | Xóa `console.log` production, giữ `console.warn` lỗi thật | Không |
 | `package.json`/`manifest.json` (1.3.1) | Sync version → 1.3.1; `lint` → `node --check` (eslint chưa có) | Không |
+| `src/config.js` + docs (1.4.0) | `COMPRESS_INTERVAL_MS` 5→10 min; README Flow 5 + `harness.md` diagram sync | Không — cùng mechanism, chỉ đổi tần suất |
+| `src/utils/*` + `tests/*` (1.4.0) | Thêm `stripSttCarryRepeat`/`quickReplies`/`toneBadge`/`memoryMeter`/`summaryLang` (mirror `sidepanel.js`) + 8 tests mới | Không — pure, additive |
+| `src/services/summary/summarySource.js` + `store.fullEnHistory` (1.4.0) | Full-meeting summary map-reduce (chunk 12k, append-only 5000, compressed cap 15000) | Không — fallback live window khi chưa có history |
 
 **Verification:**
 
 * `node --check sidepanel.js` ✅
-* `npx vitest run` 159 pass ✅
-* `npx vite build` 83.22 kB ✅
-* UI flow: Start (Tab/Mic) → STT → Translate → Suggest (không agent) → Compress (agent) → Summary (không agent) — DOM không đổi.
+* `npx vitest run` 201 pass (24 suites) ✅
+* `npx vite build` ~101 kB ✅
+* UI flow (1.4.0 stepper): Context (preset/hint) → Live (Transcript/Gợi ý/Song song) → Summary (VI/EN/JA/ZH + download .md) — Harness ports không đổi.
 
 ---
 

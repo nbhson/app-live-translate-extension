@@ -1,6 +1,6 @@
 {
   "name": "app-live-translate-extension",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Live Translate (EN → VI) — Chrome Side Panel Extension",
   "type": "module",
   "scripts": {

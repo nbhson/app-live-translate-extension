@@ -1,10 +1,10 @@
 # Live Translate (EN → VI) — Chrome Side Panel Extension
 
-Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 5-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
+Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 10-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
-Version **1.3.1** · MV3 · MIT · [Harness & Compression Agent](harness.md)
+Version **1.4.0** · MV3 · MIT · [Harness & Compression Agent](harness.md)
 
-![Live Translate Demo](<Screenshot 2026-09-19 at 14.47.07.png>)
+![Live Translate Demo](<Screenshot 2026-10-03 at 14.31.17.png>)
 
 ---
 
@@ -14,11 +14,11 @@ Version **1.3.1** · MV3 · MIT · [Harness & Compression Agent](harness.md)
 flowchart TB
     subgraph Extension["Chrome Extension (MV3)"]
         BG["background.js<br/>(service worker)<br/>isCapturableTab"]
-        SP["sidepanel.html / sidepanel.js<br/>(2713 lines + Harness facade)"]
+        SP["sidepanel.html / sidepanel.js<br/>(4637 lines + Harness facade)"]
         HARNESS["src/harness/<br/>ports · chrome · storage · speech · audio · llm · translate<br/>createHarness() composition root"]
         subgraph Modules["src/ — modular ESM (testable)"]
-            UTILS["src/utils<br/>isQuestion · splitIntoUtterances<br/>buildSuggestPrompt · parseSuggestAnswers<br/>sanitizePromptContext · escapeHtml<br/>computeSpectralCentroid · shouldToggleSpeaker"]
-            SRV["src/services<br/>translate/ · llm/ · speech/ · storage"]
+            UTILS["src/utils<br/>isQuestion · splitIntoUtterances<br/>buildSuggestPrompt · parseSuggestAnswers<br/>sanitizePromptContext · escapeHtml<br/>computeSpectralCentroid · shouldToggleSpeaker<br/>stripSttCarryRepeat · quickReplies<br/>toneBadge · memoryMeter · summaryLang"]
+            SRV["src/services<br/>translate/ · llm/ · speech/ · storage<br/>summary/summarySource · transcript/compact"]
             STORE["src/state/store.js<br/>createStore — single source of truth"]
             CFG["src/config.js<br/>CONFIG constants"]
         end
@@ -45,7 +45,7 @@ flowchart TB
     HARNESS <--> STORE
     UTILS <--> HARNESS
     SRV <--> STORE <--> UTILS
-    HARNESS -.->|"dist/main.js 79.5kB (ESM, future entry)"| SP
+    HARNESS -.->|"dist/main.js 101kB (ESM, future entry)"| SP
 ```
 
 > **Harness 1.1.0:** `src/harness/*` (7 files) là tầng duy nhất tiếp xúc `chrome`/`window`/`fetch`. Core (`src/services`, `utils`, `store`) chỉ import từ `harness`. `sidepanel.js:139` thêm `Harness` facade (delegate, không xóa logic cũ) nên UI không break. Chi tiết xem [harness.md](harness.md). `src/` không còn dead-code — `src/main.js` là composition root `createHarness()` và build `dist/main.js`.
@@ -58,10 +58,10 @@ flowchart TB
 - **Auto EN→VI Translation**: Google Translate free API per utterance, `>4200 chars` chunking, retry/backoff, 500-entry LRU cache.
 - **Tab Audio & Mic**: `chrome.tabCapture.getMediaStreamId` + loopback via `AudioContext`, fallback to mic if tab is not capturable.
 - **AI Answer Suggestions**: `isQuestion()` local gate → hybrid AI verify (`shouldTriggerAiDetect` + `questionDetect` LLM) for multi-question split (`Where are you from where were you born` → 2 pills) → `buildSuggestPrompt()` → LLM → `parseSuggestAnswers()` → Suggestion Dock (Both / Structure / Full, resizable + collapsible prompt).
-- **Rolling 5-Minute Compress**: `🗜️ Compress 5m` toggle — compresses history every 5 minutes into bullet summaries; follow-up prompts use `compressed history + 10 most recent sentences`.
-- **AI Summary**: `generateSummary()` supports native Gemini (`:generateContent`) and OpenAI-compatible (`/chat/completions`).
+- **Rolling 10-Minute Compress**: `🗜️ Compress 10m` toggle — compresses history every 10 minutes into bullet summaries; follow-up prompts use `compressed history + 10 most recent sentences`.
+- **AI Summary (full-meeting, VI/EN/JA/ZH)**: `generateSummary()` supports native Gemini (`:generateContent`) and OpenAI-compatible (`/chat/completions`); long meetings split into 12k-char chunks (map) then merged (reduce) from append-only `fullEnHistory` (5000 utterances) + `compressedSummary` — no head truncation; `Detailed/Executive/Action` modes, interactive action checklist, `.md` download.
 - **Speaker diarization heuristic**: Local VAD (RMS + spectral centroid) to distinguish 2 speakers.
-- **UI**: Single transcript feed (EN white / VI yellow), reverse layout — *newest on top*, live block + typing indicator, suggestion dock `62%` default / `78%` expanded, resizable handle, collapsible Context prompt, Context Inspector `Questions` tab shows **all questions**.
+- **UI (1.4.0 stepper + VI default)**: Stepper `1 Ngữ cảnh → 2 Live → 3 Tổng kết`; full VI/EN interface toggle (`data-i18n`, persisted); light/dark theme (`☀️/🌙`, persisted); Help overlay color legend. Single transcript feed (newest on top, timestamps, EN+VI/EN/VI submode, `🔍` search, `❓ Chỉ hỏi` filter, wave animation, `⚙️` settings dropdown, `Xem gợi ý` CTA jumps to Answers, per-utterance TTS). Suggestion dock color zones: 🟧 question → 🟦 Gợi ý nhanh (direct first-sentence quick replies) → 🟩 complete answers with tone badges (`Tự tin/Chuyên nghiệp/Ngắn gọn`, cyclic) + talking-points chips + `Đã nói ✓` answered toggle + TTS. Memory strip always visible (`bar + % + meta + Compress/Copy`). Context tab presets (Phỏng vấn/Lớp học/Bán hàng/Đàm phán). Context Inspector `Questions` tab shows **all questions**.
 
 ---
 
@@ -265,7 +265,7 @@ flowchart TD
 
 ---
 
-## Flow 5 — Rolling 5-Minute Compress (context-aware suggestions)
+## Flow 5 — Rolling 10-Minute Compress (context-aware suggestions)
 
 ```mermaid
 sequenceDiagram
@@ -274,13 +274,13 @@ sequenceDiagram
     participant UI as sidepanel.js
     participant ST as storage.local
 
-    U->>UI: Enable "🗜️ Compress 5m" toggle
+    U->>UI: Enable "🗜️ Compress 10m" toggle
     UI->>UI: loadCompressPref() → compressEnabled=true
     alt currently listening
-        UI->>UI: startCompressTimer() → setInterval 5 minutes
+        UI->>UI: startCompressTimer() → setInterval 10 minutes
     end
 
-    loop Every 5 minutes (or "Compress now" button)
+    loop Every 10 minutes (or "Compress now" button)
         UI->>UI: performCompression(isManual)
         Note over UI: guard: compressInProgress ·<br/>pendingCount >= 2 · non-empty segment
         UI->>UI: segment = finalizedEnPhrases.slice(lastCompressedIdx)
@@ -302,25 +302,24 @@ sequenceDiagram
 
 ---
 
-## Flow 6 — AI Summary
+## Flow 6 — AI Summary (full-meeting map-reduce, VI/EN/JA/ZH)
 
-> Unchanged per spec — `generateSummary` / `parseMarkdown` / `parseInlineMarkdown` remain as-is.
+> `src/services/summary/summarySource.js` + `src/state/store.js:fullEnHistory` (append-only, never spliced by compaction, capped 5000 utterances) + `compressedSummary` (cap 15000 chars). Fixes "1h meeting only summarizes last 30m".
 
 ```mermaid
 flowchart TD
-    A["Click AI Summary"] --> B["getFullEnglishText()<br/>join all finalizedEnPhrases"]
+    A["Click AI Summary"] --> B["getSummarySource()<br/>fullEnHistory preferred<br/>fallback live window + compressedSummary head"]
     B --> C{"Has content?"}
     C -- "No" --> ER["alert('No meeting content...')"]
     C -- "Yes" --> D{"provider configured?"}
     D -- "Missing" --> ER2["open settings + alert"]
-    D -- "OK" --> E["Read lang (vi/en) + detail (bullets/short/action)"]
+    D -- "OK" --> E["Read lang (vi/en/ja/zh) + detail (bullets/short/action)"]
+    E --> CH{"Total chars > 12000?"}
+    CH -- "No" --> S1["Single call: buildSummaryPrompt(fullText)"]
+    CH -- "Yes" --> S2["Split splitSummaryChunks(12000)<br/>map: summarize each chunk → merge prompt (reduce)"]
 
-    E --> F{"lang == 'vi'?"}
-    F -- "vi" --> G["Vietnamese prompt: bullets/2-3 paragraphs/Action Items"]
-    F -- "en" --> H["English prompt by detail"]
-
-    G --> I{"isGemini(baseUrl)?"}
-    H --> I
+    S1 --> I{"isGemini(baseUrl)?"}
+    S2 --> I
     I -- "Gemini" --> J["POST {baseUrl}/models/{model}:generateContent?key=...<br/>contents[{parts[{text}]}]"]
     I -- "OpenAI-compatible" --> K["POST {baseUrl}/chat/completions<br/>messages[system+user] · temperature 0.7"]
 
@@ -329,8 +328,9 @@ flowchart TD
     L --> M{"Has text?"}
     M -- "No" --> ER3["throw 'API returned no content'"]
     M -- "Yes" --> N["parseMarkdown(candidateText)"]
-    N --> O["summaryMarkdown.innerHTML = rendered<br/>store rawText for copy"]
+    N --> O["summaryMarkdown.innerHTML = rendered<br/>store rawText for copy + show downloadSummaryBtn (.md)"]
     O --> P["toast 'Summarized with {model} successfully'"]
+    O --> Q2["enhanceMdTasks(): '- [ ]' → interactive checklist + progress pill"]
 
     N --> Q["parseInlineMarkdown — bold, headers, links, list"]
 ```
@@ -404,9 +404,13 @@ sequenceDiagram
 | `INTERIM_DEBOUNCE_MS` | 420 | debounce interim translation (reduced from 500) |
 | `TRANSLATION_CACHE_MAX` | 500 | LRU translation cache size |
 | `MAX_CONCURRENT_TRANSLATE` | 3 | concurrent translation pool |
-| `COMPRESS_INTERVAL_MS` | 5 min | auto-compress frequency |
+| `COMPRESS_INTERVAL_MS` | 10 min | auto-compress frequency |
 | `COMPRESS_RECENT_KEEP` | 10 | recent utterances kept in compressed prompt |
 | `COMPRESS_MAX_CHARS` | 3000 | cap for compressedSummary when building prompt |
+| `FULL_HISTORY_MAX_UTTERANCES` | 5000 | append-only full history cap (~4-6h speech, never spliced by compaction) |
+| `SUMMARY_CHUNK_CHARS` | 12000 | single LLM call cap; longer meetings map-reduce |
+| `COMPRESSED_SUMMARY_MAX_CHARS` | 15000 | rolling bullets cap (~2h of 10-min compressions) |
+| `COMPRESS_SEGMENT_MAX_CHARS` | 12000 | per-compression segment cap (keep newest) |
 | `SPEAKER_VAD_RMS_THRESH` | 0.012 | RMS threshold considered "speech" |
 | `SPEAKER_MIN_PAUSE_MS` | 350 | minimum pause to consider speaker switch |
 | `SPEAKER_MIN_SPEECH_MS` | 600 | minimum speech duration before switching to silence |
@@ -435,10 +439,10 @@ sequenceDiagram
 
 ## Usage
 
-1. Select source (Tab Audio / Microphone) → **Start** (or Space).
-2. Speak English → realtime EN/VI transcript. Questions are highlighted with `?` and auto-generate suggestions in the dock.
-3. Enable `🗜️ Compress 5m` for long sessions (>15 min) so suggestions stay grounded in full history.
-4. **AI Summary** tab → choose `VI/EN` + `Detailed/Short/Actions` → **Summarize** → Copy.
+1. Step `1 Ngữ cảnh`: pick a preset (Phỏng vấn/Lớp học/Bán hàng/Đàm phán) or type a hint → shapes AI suggestions (does not affect summary).
+2. Step `2 Live`: select source (Tab/Mic segmented or dropdown) → **Bắt đầu Live** (or Space). Speak English → realtime EN/VI transcript (search, `❓ Chỉ hỏi` filter, EN+VI/EN/VI). Questions show `Xem gợi ý` → jump to `✦ Gợi ý` tab for quick replies + full answers (mark `Đã nói ✓` when spoken).
+3. Enable `🗜️ Compress 10m` (inside `⚙️` transcript settings) for long sessions (>15 min) + watch the always-visible memory strip.
+4. Step `3 Tổng kết`: choose `VI/EN/JA/ZH` + `Detailed/Executive/Action` → **Summarize** → Copy / Download `.md` (Action mode gives interactive checklist).
 
 ### Shortcuts
 
@@ -458,7 +462,7 @@ optional_host:      https://*/*            (add if custom URL needed → validat
 
 ```bash
 npm install
-npm test               # vitest run --coverage  (22 suites)
+npm test               # vitest run --coverage  (24 suites, 201 tests)
 npm run test:watch
 npm run build          # vite build → dist/main.js
 npm run lint           # node --check sidepanel/background/permission
@@ -480,38 +484,60 @@ tests/
   isQuestion.test.js              — 17 cases (?, WH-start, aux, tag, embedded, indirect, exclamation, declarative trap, STT noise s/n+youestion, no-comma tag, comma-concat, what/how about, wondering/polite)
   splitIntoUtterances.test.js     — 15 cases (empty, punctuation, WH keep, mid-split how, abbrev merge Mr./Dr., Safari fallback, STT normalize, comma-concat, no-punct concat, multi Q+A)
   parseSuggestAnswers.test.js     — object/array/bullet fallback, limit 5, synthesizeStructures, code fence
-  sanitizePromptContext.test.js   — trim/slice, null-safe, triple-quote escape (matches new fix)
+  sanitizePromptContext.test.js   — trim/slice, null-safe, triple-quote escape + sanitizePromptSegmentSide cap
   contextInspector.test.js        — live/compressed/empty + allQuestions count + truncates
   isCapturableTab.test.js         — schemes, chrome://, about:, blocked hosts
   computeSpectralCentroid.test.js — edge & branch
   shouldToggleSpeaker.test.js     — rms/centroid diff, debounce window
   escapeHtml.test.js              — entities
   harness.test.js / compressionAgent.test.js — Harness 6 ports + Compression Agent 3 tools
+  stripSttCarryRepeat.test.js     — 3 cases (reported did/Simkins carry, punct tail + case, never-strip a/I/mismatch/donald)
+  portedFeatures.test.js          — 5 cases (toneClass/assignTones, computeMemoryMeta thresholds, summaryLangName ja/zh, quickReplies direct)
+  summarySource.test.js           — 7 cases (append-only fullEnHistory, splitSummaryChunks 12k, buildSummaryPrompt dedup/compress head)
+  compact.test.js / storage.test.js / provider.test.js / recognition.test.js / translate.test.js / translateFallback.test.js / batch.test.js / cache.test.js / compress.test.js — services + storage + STT guards
 ```
 
-> **On tests:** `src/utils` ~94–100%, `src/services/translate` 89%, `src/services/llm` 93%, `src/harness` 46% (mới). Xem `harness.md:5` chi tiết.
+> **On tests:** `src/utils` ~94–100%, `src/services/translate` 89%, `src/services/llm` 93%, `src/harness` 46%. Xem `harness.md:5` chi tiết.
 
 ## File map
 
 | File | Role | Notes |
 |---|---|---|
-| `sidepanel.js` | Main runtime + `Harness` facade (`sidepanel.js:139`) | ~3100 lines; delegate tới `Harness.*` + hybrid AI questionDetect + resizable dock |
-| `sidepanel.html` / `sidepanel.css` | Layout & style | `dist/main.js` (91 kB) sẵn sàng; dock resizer + collapsible prompt + expanded 78% |
+| `sidepanel.js` | Main runtime + `Harness` facade + full VI/EN i18n | ~4637 lines; stepper Context→Live→Summary, memory strip, search/filter/submode, quick replies + tones, map-reduce summary, STT carry guard |
+| `sidepanel.html` / `sidepanel.css` | Layout & style | Stepper tabs, audio segmented Tab/Mic, memory strip, `⚙️` toolbar settings, help legend overlay, light/dark theme + display-lock, color zones (amber/sky/emerald) |
 | `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | dùng `isCapturableTab` pure |
-| `manifest.json` | MV3 manifest, permissions, icons | |
-| `permission.html` / `permission.js` | Mic/capture permission overlay | |
+| `manifest.json` | MV3 manifest, permissions, icons | v1.4.0 |
+| `permission.html` / `permission.js` | Mic/capture permission overlay | VI/EN via i18n |
 | `src/harness/*` | Harness layer — 7 files, Ports/Adapters | composition root `createHarness()`, injectable mocks, xem `harness.md` |
-| `src/main.js` | ESM entry — `createHarness()` + re-export | Vite build `dist/main.js` |
+| `src/main.js` | ESM entry — `createHarness()` + re-export | Vite build `dist/main.js` (~101 kB) |
 | `src/services/llm/questionDetect.js` | AI supplement for question split | `buildDetectPrompt`/`detectQuestionsViaAI` (temp 0.2) |
+| `src/services/summary/summarySource.js` | Full-meeting summary source | `fullEnHistory` append-only + `splitSummaryChunks`/`buildSummaryPrompt` (map-reduce, dedup compressed head) |
+| `src/services/transcript/compact.js` | Memory compaction | keeps head in `fullEnHistory`, compacts only live window |
 | `src/utils/shouldTriggerAiDetect.js` | Gate for AI calls | `shouldTriggerAiSplit/FalseNegative` (~5-10% LM calls) |
+| `src/utils/stripSttCarryRepeat.js` | STT carry-repeat guard | strips `d/s` fragment mirroring prev tail (never `a`/`I`) |
+| `src/utils/quickReplies.js` | Gợi ý nhanh | `firstSentenceDirect` (≤140c) + `makeQuickReplies` (answers→structures fallback) |
+| `src/utils/toneBadge.js` | Tone taxonomy | `toneClass`/`assignTones` (Tự tin/Chuyên nghiệp/Ngắn gọn cyclic) |
+| `src/utils/memoryMeter.js` | Memory math | `computeMemoryMeta` (pct/level/meta, warn>50/danger>80) |
+| `src/utils/summaryLang.js` | Summary langs | `summaryLangName` (vi/en/ja/zh + fallback vi) |
 | `src/ui/components/contextInspector.js` | Context Inspector | `allQuestions` (pending tab = all questions) + live/compressed |
-| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 166 tests |
-| `tests/` | Vitest suites | 166 tests (20 suites, gồm harness + compressionAgent) |
+| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 201 tests |
+| `tests/` | Vitest suites | 201 tests (24 suites, gồm harness + compressionAgent + portedFeatures + stripSttCarryRepeat + summarySource) |
 | `lib/compromise.min.js` | Optional NLP for isQuestion | improves accuracy if loaded |
 | `harness.md` | Kiến trúc Harness chi tiết | Ports, Adapters, flows, checklist không-break |
 
 ## Changelog
 
+- **1.4.0 (2026-10-03)**: UI overhaul port từ React live-copilot + full-meeting summary + STT guard:
+  - Stepper `1 Ngữ cảnh → 2 Live → 3 Tổng kết` (Context tách khỏi Live view thành tab top-level, expanded mặc định); Live còn 3 sub-views `💬 Phụ đề / ✦ Gợi ý / ◫ Song song`.
+  - Full VI/EN interface (`I18N` dict + `data-i18n*`, toggle `VI` header, persisted) — mặc định VI, rebrand `Live Translate & Copilot Realtime`.
+  - Theme sáng/tối (`☀️/🌙`, `data-theme`, persisted) + Help overlay bản đồ màu (🟧 câu hỏi / 🟦 gợi ý nhanh / 🟩 câu hoàn chỉnh).
+  - Transcript: `🔍` search, `❓ Chỉ hỏi` filter, submode `EN+VI/EN/VI`, utterance count, timestamps, wave animation, `⚙️` settings dropdown (AI toggle, Compress 10m, Auto dịch, copy EN/VI/All), `Xem gợi ý` CTA nhảy sang Answers, TTS từng câu.
+  - Answers color zones: `makeQuickReplies()` (câu đầu ≤140c, fallback structures) + tone badges cyclic (`toneClass`/`assignTones`) + talking-points chips + `Đã nói ✓` answered toggle + TTS + retry.
+  - Context: 4 presets (Phỏng vấn/Lớp học/Bán hàng/Đàm phán) + memory strip luôn hiển thị (`computeMemoryMeta`: bar + % + `n câu • m câu hỏi`, warn>50/danger>80, nút Compress/Copy).
+  - Summary: thêm `JA/ZH` (`summaryLangName`), `Executive` mode, download `.md`, checklist `- [ ]` interactive + progress pill; map-reduce chunk 12k (`summarySource.js` + `fullEnHistory` append-only 5000, `COMPRESSED_SUMMARY_MAX` 15000) — giữ head sau compaction.
+  - STT carry-repeat: `stripSttCarryRepeat()` ở đầu `finalizeText()` (`did` → `d I…`, `Simkins` → `s how…`; không strip `a`/`I`, mirror `src/utils/stripSttCarryRepeat.js` + test).
+  - Compress `5m → 10m` (`src/config.js`, `harness.md`, README Flow 5).
+  - Version sync `manifest.json` + `package.json` → `1.4.0`; screenshot mới `2026-10-03`; tests 201 (24 suites: +`portedFeatures`, +`stripSttCarryRepeat`, +`summarySource`).
 - **1.3.1 (2026-09-29)**: Hardening + docs sync:
   - `sidepanel.js` `showToast` chuyển từ `innerHTML` sang `textContent` (XSS-safe, mirror `src/ui/components/toast.js`).
   - Xóa `console.log` production (`src/main.js`, `src/services/llm/compress.js` — chỉ giữ `console.warn` cho lỗi thật).
