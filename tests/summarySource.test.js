@@ -68,7 +68,7 @@ describe('summarySource (full-meeting summary, no head loss)', () => {
     expect(p).toContain('sum B');
     expect(p).toContain('Vietnamese');
     expect(p).toContain('Action Items');
-    expect(p).not.toContain('drop early');
+    expect(p).toContain('do not drop early parts');
   });
 
   it('caps are sane for hour-long meetings', () => {

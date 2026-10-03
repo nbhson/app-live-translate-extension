@@ -2,7 +2,7 @@
 
 Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 10-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
-Version **1.4.0** · MV3 · MIT · [Harness & Compression Agent](harness.md)
+Version **1.4.1** · MV3 · MIT · [Harness & Compression Agent](harness.md)
 
 ![Live Translate Demo](<Screenshot 2026-10-03 at 14.31.17.png>)
 
@@ -506,7 +506,7 @@ tests/
 | `sidepanel.js` | Main runtime + `Harness` facade + full VI/EN i18n | ~4637 lines; stepper Context→Live→Summary, memory strip, search/filter/submode, quick replies + tones, map-reduce summary, STT carry guard |
 | `sidepanel.html` / `sidepanel.css` | Layout & style | Stepper tabs, audio segmented Tab/Mic, memory strip, `⚙️` toolbar settings, help legend overlay, light/dark theme + display-lock, color zones (amber/sky/emerald) |
 | `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | dùng `isCapturableTab` pure |
-| `manifest.json` | MV3 manifest, permissions, icons | v1.4.0 |
+| `manifest.json` | MV3 manifest, permissions, icons | v1.4.1 |
 | `permission.html` / `permission.js` | Mic/capture permission overlay | VI/EN via i18n |
 | `src/harness/*` | Harness layer — 7 files, Ports/Adapters | composition root `createHarness()`, injectable mocks, xem `harness.md` |
 | `src/main.js` | ESM entry — `createHarness()` + re-export | Vite build `dist/main.js` (~101 kB) |
@@ -527,6 +527,9 @@ tests/
 
 ## Changelog
 
+- **1.4.1 (2026-10-03)**: Fix CI đỏ (2 tests):
+  - `stripSttCarryRepeat('d','did')` → `''`: thêm nhánh ký-tự đơn đứng một mình (mirror cả `sidepanel.js`); `finalizeText()` đã skip utterance rỗng nên fragment mic-rơi không còn lọt transcript.
+  - `summarySource` merge-prompt test: assertion cũ `not.toContain('drop early')` ngược với intent "cover whole meeting" — sửa thành `toContain('do not drop early parts')` (khớp prompt map-reduce giữ head).
 - **1.4.0 (2026-10-03)**: UI overhaul port từ React live-copilot + full-meeting summary + STT guard:
   - Stepper `1 Ngữ cảnh → 2 Live → 3 Tổng kết` (Context tách khỏi Live view thành tab top-level, expanded mặc định); Live còn 3 sub-views `💬 Phụ đề / ✦ Gợi ý / ◫ Song song`.
   - Full VI/EN interface (`I18N` dict + `data-i18n*`, toggle `VI` header, persisted) — mặc định VI, rebrand `Live Translate & Copilot Realtime`.
