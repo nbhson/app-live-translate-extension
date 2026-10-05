@@ -836,8 +836,8 @@ body { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', R
 #liveTabContent.show-split .dock-complete-card,
 #liveTabContent.show-split .dock-structure-item,
 #liveTabContent.show-split .dock-q-zone { min-width: 0; max-width: 100%; }
-#liveTabContent.show-split .question-pills { flex-wrap: wrap; overflow-x: visible; }
-#liveTabContent.show-split .dock-tabs { flex-wrap: wrap; overflow-x: visible; }
+#liveTabContent.show-split .question-pills { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; max-height: 44px; }
+#liveTabContent.show-split .dock-tabs { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; }
 /* Answers never scroll horizontally — vertical scroll only */
 #liveTabContent .suggestion-body { overflow-x: hidden; }
 

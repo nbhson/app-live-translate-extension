@@ -45,13 +45,14 @@ describe('contextInspector', () => {
   });
 
   it('truncates long context', () => {
-    const long = 'a'.repeat(2000);
+    const long = 'a'.repeat(20000);
     const snap = getContextSnapshot({
       finalizedEnPhrases: [long, long],
       compressedSummary: '',
       compressEnabled: false,
       lastCompressedIdx: 0,
     });
-    expect(snap.liveCtx.length).toBeLessThan(6500);
+    expect(snap.liveCtx.length).toBeLessThan(31000);
+    expect(snap.liveCtx).toContain('budget 30000 chars');
   });
 });

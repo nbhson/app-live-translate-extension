@@ -8,7 +8,15 @@ export const CONFIG = Object.freeze({
   MAX_CONCURRENT_TRANSLATE: 3,
   COMPRESS_INTERVAL_MS: 10 * 60 * 1000,
   COMPRESS_RECENT_KEEP: 10,
-  COMPRESS_MAX_CHARS: 3000,
+  COMPRESS_MAX_CHARS: 6000,
+  // Memory meter budget (display + inspector OFF-mode budget): 30000 chars ≈ 7500 tokens ≈ 1.5-2h speech.
+  MEMORY_BUDGET: 30000,
+  // Suggest prompt budgets (tail of memory, per-call cost/latency guard):
+  // fast path (default) keeps latency ~2-3s; quality path for richer context.
+  SUGGEST_CTX_FAST: 8000,
+  SUGGEST_CTX_QUALITY: 12000,
+  SUGGEST_RECENT_FAST: 3000,
+  SUGGEST_RECENT_QUALITY: 4000,
   SPEAKER_VAD_RMS_THRESH: 0.012,
   SPEAKER_MIN_PAUSE_MS: 350,
   SPEAKER_MIN_SPEECH_MS: 600,

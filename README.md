@@ -406,7 +406,10 @@ sequenceDiagram
 | `MAX_CONCURRENT_TRANSLATE` | 3 | concurrent translation pool |
 | `COMPRESS_INTERVAL_MS` | 10 min | auto-compress frequency |
 | `COMPRESS_RECENT_KEEP` | 10 | recent utterances kept in compressed prompt |
-| `COMPRESS_MAX_CHARS` | 3000 | cap for compressedSummary when building prompt |
+| `COMPRESS_MAX_CHARS` | 6000 | cap for compressedSummary when building prompt |
+| `MEMORY_BUDGET` | 30000 | memory meter + inspector OFF-mode budget (~1.5-2h speech) |
+| `SUGGEST_CTX_FAST` / `SUGGEST_CTX_QUALITY` | 8000 / 12000 | suggest prompt history tail (fast default vs quality) |
+| `SUGGEST_RECENT_FAST` / `SUGGEST_RECENT_QUALITY` | 3000 / 4000 | recent slice when compress ON |
 | `FULL_HISTORY_MAX_UTTERANCES` | 5000 | append-only full history cap (~4-6h speech, never spliced by compaction) |
 | `SUMMARY_CHUNK_CHARS` | 12000 | single LLM call cap; longer meetings map-reduce |
 | `COMPRESSED_SUMMARY_MAX_CHARS` | 15000 | rolling bullets cap (~2h of 10-min compressions) |

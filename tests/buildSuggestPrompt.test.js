@@ -5,7 +5,7 @@ describe('buildSuggestPrompt', () => {
   const question = 'What did you do yesterday?';
   const ctx4 = ['Hello', 'We had daily meeting', 'John reported API done', 'Any blockers?'];
 
-  it('default mode uses ALL history (compress OFF, 6000c)', () => {
+  it('default mode uses ALL history (compress OFF, 8000c fast)', () => {
     const p = buildSuggestPrompt(question, ctx4);
     expect(p).toContain('History:');
     expect(p).toContain('Q: """What did you do yesterday?"""');
@@ -13,12 +13,22 @@ describe('buildSuggestPrompt', () => {
     expect(p).not.toContain('Compressed history');
   });
 
-  it('default mode sends ALL when history long (truncates 6000c)', () => {
+  it('default mode sends ALL when history long (truncates 8000c fast)', () => {
     const many = Array.from({ length: 20 }, (_, i) => `utterance ${i} with some text to fill`);
     const p = buildSuggestPrompt(question, many);
     expect(p).toContain('History:');
     expect(p).toContain('utterance 19');
-    expect(p).toContain('utterance 0'); // all retained unless >6000c
+    expect(p).toContain('utterance 0'); // all retained unless >8000c
+  });
+
+  it('default mode truncates past fast/quality budget', () => {
+    const many = Array.from({ length: 300 }, (_, i) => `utterance ${i} with some padding text to fill budget`);
+    const pFast = buildSuggestPrompt(question, many, { quality: 'fast' });
+    expect(pFast).toContain('utterance 299');
+    expect(pFast).not.toContain('utterance 0 with');
+    const pQuality = buildSuggestPrompt(question, many);
+    expect(pQuality).toContain('utterance 299');
+    expect(pQuality).not.toContain('utterance 0 with');
   });
 
   it('injects user context when provided', () => {
@@ -50,12 +60,12 @@ describe('buildSuggestPrompt', () => {
     expect(p).toContain(longHistory);
   });
 
-  it('compress mode truncates to 3000 chars', () => {
-    const huge = 'a'.repeat(5000);
+  it('compress mode truncates to 6000 chars', () => {
+    const huge = 'a'.repeat(10000);
     const p = buildSuggestPrompt(question, ['hi'], { compressEnabled: true, compressedSummary: huge });
-    // compressed part should be last 3000
+    // compressed part should be last 6000
     const after = p.split('History:')[1];
-    expect(after.length).toBeLessThan(4000); // not full 5000
+    expect(after.length).toBeLessThan(7000); // not full 10000
   });
 
   it('handles null/undefined inputs', () => {

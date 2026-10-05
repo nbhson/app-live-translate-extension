@@ -29,8 +29,12 @@ export function buildSuggestPrompt(question, contextEn, opts = {}) {
   const isFast = opts.quality === 'fast';
   const wordsSpec = isFast ? '40-70 words' : '60-120 words';
   const sentSpec = isFast ? '2-3 sentences' : '3-5 sentences';
-  const maxCtx = isFast ? 2500 : 3500;
-  const recentBudget = isFast ? 1000 : 1500;
+  const maxCtx = isFast
+    ? (CONFIG.SUGGEST_CTX_FAST || 8000)
+    : (CONFIG.SUGGEST_CTX_QUALITY || 12000);
+  const recentBudget = isFast
+    ? (CONFIG.SUGGEST_RECENT_FAST || 3000)
+    : (CONFIG.SUGGEST_RECENT_QUALITY || 4000);
 
   if (compressEnabled && compressedSummary) {
     const recent = ctxArr.slice(-CONFIG.COMPRESS_RECENT_KEEP);

@@ -15,7 +15,12 @@ const CONFIG = Object.freeze({
   MAX_CONCURRENT_TRANSLATE: 3,
   COMPRESS_INTERVAL_MS: 10 * 60 * 1000,
   COMPRESS_RECENT_KEEP: 10,
-  COMPRESS_MAX_CHARS: 3000,
+  COMPRESS_MAX_CHARS: 6000,
+  MEMORY_BUDGET: 30000,
+  SUGGEST_CTX_FAST: 8000,
+  SUGGEST_CTX_QUALITY: 12000,
+  SUGGEST_RECENT_FAST: 3000,
+  SUGGEST_RECENT_QUALITY: 4000,
   // Summary coverage (fix: 1h meeting lost its first 30m):
   // - FULL_HISTORY_MAX keeps an append-only archive of every finalized utterance
   // - SUMMARY_CHUNK_CHARS splits long meetings into map-reduce chunks (no truncation)
@@ -53,6 +58,7 @@ const MAX_CONCURRENT_TRANSLATE = CONFIG.MAX_CONCURRENT_TRANSLATE;
 const COMPRESS_INTERVAL_MS = CONFIG.COMPRESS_INTERVAL_MS;
 const COMPRESS_RECENT_KEEP = CONFIG.COMPRESS_RECENT_KEEP;
 const COMPRESS_MAX_CHARS = CONFIG.COMPRESS_MAX_CHARS;
+const MEMORY_BUDGET = CONFIG.MEMORY_BUDGET || 30000;
 const FULL_HISTORY_MAX_UTTERANCES = CONFIG.FULL_HISTORY_MAX_UTTERANCES;
 const SUMMARY_CHUNK_CHARS = CONFIG.SUMMARY_CHUNK_CHARS;
 const COMPRESSED_SUMMARY_MAX_CHARS = CONFIG.COMPRESSED_SUMMARY_MAX_CHARS;
@@ -995,8 +1001,8 @@ function getContextSnapshot() {
     const recent = en;
     liveCount = recent.length;
     const ctx = recent.join(' | ');
-    const truncated = ctx.length > 6000 ? ctx.slice(-6000) : ctx;
-    liveCtx = `Conversation history (all ${liveCount} utterances, budget 6000 chars):\n${truncated || '(empty — speak to fill context)'}`;
+    const truncated = ctx.length > MEMORY_BUDGET ? ctx.slice(-MEMORY_BUDGET) : ctx;
+    liveCtx = `Conversation history (all ${liveCount} utterances, budget ${MEMORY_BUDGET} chars):\n${truncated || '(empty — speak to fill context)'}`;
   }
   return {
     liveCtx,
@@ -1776,8 +1782,8 @@ function buildSuggestPrompt(question, contextEn, opts) {
   const isFast = quality === 'fast';
   const wordsSpec = isFast ? '40-70 words' : '60-120 words';
   const sentSpec = isFast ? '2-3 sentences' : '3-5 sentences';
-  const maxCtx = isFast ? 2500 : 3500;
-  const recentBudget = isFast ? 1000 : 1500;
+  const maxCtx = isFast ? (CONFIG.SUGGEST_CTX_FAST || 8000) : (CONFIG.SUGGEST_CTX_QUALITY || 12000);
+  const recentBudget = isFast ? (CONFIG.SUGGEST_RECENT_FAST || 3000) : (CONFIG.SUGGEST_RECENT_QUALITY || 4000);
   if (compressEnabled && compressedSummary) {
     const recent = contextEn.slice(-COMPRESS_RECENT_KEEP);
     const recentCtx = truncateForPrompt(recent, recentBudget);
@@ -4453,14 +4459,14 @@ function updateMdTaskProgress() {
   if (badge) badge.textContent = `${done} / ${boxes.length} hoàn thành`;
 }
 
-/** Memory meter: chars used vs 6000 budget + counts (React ContextManagerView port) */
+/** Memory meter: chars used vs MEMORY_BUDGET + counts (React ContextManagerView port) */
 function updateMemoryMeter() {
   try {
     const fill = document.getElementById('memoryFill');
     const pct = document.getElementById('memoryPct');
     const meta = document.getElementById('memoryMeta');
     if (!fill || !pct || !meta) return;
-    const budget = 6000;
+    const budget = MEMORY_BUDGET;
     const used = (finalizedEnPhrases || []).join(' ').length + ((typeof compressedSummary === 'string') ? compressedSummary.length : 0);
     const p = Math.min(100, Math.round((used / budget) * 100));
     fill.style.width = p + '%';

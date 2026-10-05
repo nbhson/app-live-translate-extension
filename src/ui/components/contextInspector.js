@@ -47,8 +47,9 @@ export function getContextSnapshot(s) {
   } else {
     const recent = en;
     liveCount = recent.length;
-    const ctx = truncateForInspect(recent, 6000);
-    liveCtx = `Conversation history (all ${liveCount} utterances, budget 6000 chars):\n${ctx || '(empty — speak to fill context)'}`;
+    const budget = CONFIG.MEMORY_BUDGET || 30000;
+    const ctx = truncateForInspect(recent, budget);
+    liveCtx = `Conversation history (all ${liveCount} utterances, budget ${budget} chars):\n${ctx || '(empty — speak to fill context)'}`;
   }
   return {
     stats,
@@ -58,7 +59,7 @@ export function getContextSnapshot(s) {
     pendingList: pending,
     allQuestions,
     recentForPrompt: enabled && comp ? en.slice(-CONFIG.COMPRESS_RECENT_KEEP) : en,
-    truncatedRecent: enabled && comp ? truncateForInspect(en.slice(-CONFIG.COMPRESS_RECENT_KEEP), 1500) : truncateForInspect(en, 6000),
+    truncatedRecent: enabled && comp ? truncateForInspect(en.slice(-CONFIG.COMPRESS_RECENT_KEEP), CONFIG.SUGGEST_RECENT_FAST || 3000) : truncateForInspect(en, CONFIG.MEMORY_BUDGET || 30000),
   };
 }
 
