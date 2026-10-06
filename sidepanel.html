@@ -399,6 +399,15 @@
           </datalist>
           <span class="help-text" data-i18n="cfg_model_help">Enter the exact provider model name.</span>
         </div>
+        <div class="form-group-vertical">
+          <label for="thinkingToggle" data-i18n="cfg_thinking">Thinking</label>
+          <label class="toggle-switch" style="align-self:flex-start">
+            <input type="checkbox" id="thinkingToggle" checked>
+            <span class="slider"></span>
+            <span id="thinkingToggleLabel">ON</span>
+          </label>
+          <span class="help-text" data-i18n="cfg_thinking_help">OFF = model answers directly without reasoning/thinking (faster).</span>
+        </div>
         <!-- Legacy hidden select for compat -->
         <select id="geminiModelSelect" style="display:none"><option value="gemini-2.5-flash"></option></select>
       </div>

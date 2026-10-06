@@ -2,7 +2,7 @@
 
 Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 10-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
-Version **1.4.1** · MV3 · MIT · [Harness & Compression Agent](harness.md)
+Version **1.4.2** · MV3 · MIT · [Harness & Compression Agent](harness.md)
 
 ![Live Translate Demo](<Screenshot 2026-10-03 at 14.31.17.png>)
 
@@ -438,7 +438,9 @@ sequenceDiagram
 - **Base URL**: `https://generativelanguage.googleapis.com/v1beta` (Gemini) / `https://api.openai.com/v1` / `http://localhost:11434/v1` (Ollama) / `https://api.groq.com/openai/v1`.
 - **API Key**: `AIza...` / `sk-...` (leave empty for localhost).
 - **Model**: `gemini-2.5-flash`, `gpt-4o-mini`, `llama3.1`, ...
-- Stored in `chrome.storage.local` (`providerBaseUrl`, `providerApiKey`, `providerModel`). 1-click preset chips. `isValidProviderConfig()` checks `http/https` + non-empty model.
+- **Thinking** (ON default): OFF disables model reasoning/thinking for faster, direct answers. ON sends no extra params (current behavior); OFF sends cross-backend disable flags — Gemini `thinkingConfig: { thinkingBudget: 0 }`, OpenAI-compatible `reasoning_effort: 'none'` + `reasoning/thinking/think/enable_thinking/chat_template_kwargs` (unknown fields are ignored by strict servers).
+- Stored in `chrome.storage.local` (`providerBaseUrl`, `providerApiKey`, `providerModel`, `providerThinkingEnabled`). 1-click preset chips. `isValidProviderConfig()` checks `http/https` + non-empty model.
+- **Ollama local returns HTTP 403?** Ollama blocks the extension's `Origin: chrome-extension://...` by default. Restart Ollama with `OLLAMA_ORIGINS="chrome-extension://*" ollama serve` (Mac app: `launchctl setenv OLLAMA_ORIGINS "chrome-extension://*"` then quit/reopen Ollama). The app now surfaces this fix directly in the 403 error message (`friendlyProviderError`).
 
 ## Usage
 
@@ -465,7 +467,7 @@ optional_host:      https://*/*            (add if custom URL needed → validat
 
 ```bash
 npm install
-npm test               # vitest run --coverage  (24 suites, 201 tests)
+npm test               # vitest run --coverage  (24 suites, 206 tests)
 npm run test:watch
 npm run build          # vite build → dist/main.js
 npm run lint           # node --check sidepanel/background/permission
@@ -509,7 +511,7 @@ tests/
 | `sidepanel.js` | Main runtime + `Harness` facade + full VI/EN i18n | ~4637 lines; stepper Context→Live→Summary, memory strip, search/filter/submode, quick replies + tones, map-reduce summary, STT carry guard |
 | `sidepanel.html` / `sidepanel.css` | Layout & style | Stepper tabs, audio segmented Tab/Mic, memory strip, `⚙️` toolbar settings, help legend overlay, light/dark theme + display-lock, color zones (amber/sky/emerald) |
 | `background.js` | SW: sidePanel behavior + `get-tab-stream-id` | dùng `isCapturableTab` pure |
-| `manifest.json` | MV3 manifest, permissions, icons | v1.4.1 |
+| `manifest.json` | MV3 manifest, permissions, icons | v1.4.2 |
 | `permission.html` / `permission.js` | Mic/capture permission overlay | VI/EN via i18n |
 | `src/harness/*` | Harness layer — 7 files, Ports/Adapters | composition root `createHarness()`, injectable mocks, xem `harness.md` |
 | `src/main.js` | ESM entry — `createHarness()` + re-export | Vite build `dist/main.js` (~101 kB) |
@@ -523,13 +525,17 @@ tests/
 | `src/utils/memoryMeter.js` | Memory math | `computeMemoryMeta` (pct/level/meta, warn>50/danger>80) |
 | `src/utils/summaryLang.js` | Summary langs | `summaryLangName` (vi/en/ja/zh + fallback vi) |
 | `src/ui/components/contextInspector.js` | Context Inspector | `allQuestions` (pending tab = all questions) + live/compressed |
-| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 201 tests |
-| `tests/` | Vitest suites | 201 tests (24 suites, gồm harness + compressionAgent + portedFeatures + stripSttCarryRepeat + summarySource) |
+| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 206 tests |
+| `tests/` | Vitest suites | 206 tests (24 suites, gồm harness + compressionAgent + portedFeatures + stripSttCarryRepeat + summarySource + provider 403/Ollama hint) |
 | `lib/compromise.min.js` | Optional NLP for isQuestion | improves accuracy if loaded |
 | `harness.md` | Kiến trúc Harness chi tiết | Ports, Adapters, flows, checklist không-break |
 
 ## Changelog
 
+- **1.4.2 (2026-10-06)**: Thinking toggle + lỗi 403 thân thiện hơn:
+  - Settings custom provider thêm option **Thinking ON/OFF** (ON mặc định, giữ nguyên behavior; OFF tắt reasoning/thinking cross-backend: Gemini `thinkingBudget: 0`, OpenAI-compatible `reasoning_effort: 'none'` + `reasoning/thinking/think/enable_thinking/chat_template_kwargs`; áp dụng cho suggest, generic/compress/detect, summary, cả stream). Lưu `providerThinkingEnabled` vào `chrome.storage.local`, mirror `src/` ↔ `sidepanel.js`.
+  - Fix UX lỗi **403 từ Ollama local**: nguyên nhân là Ollama chặn `Origin: chrome-extension://...` → user restart Ollama với `OLLAMA_ORIGINS="chrome-extension://*"`; `friendlyProviderError()` (mới, `src/services/llm/provider.js` + mirror `sidepanel.js`) bóc error detail từ JSON/text, không leak HTML, và gắn thẳng cách fix vào message 403-local. +5 tests (provider 403/Ollama hint).
+  - Version sync `manifest.json` + `package.json` → `1.4.2`; tests 206 (24 suites).
 - **1.4.1 (2026-10-03)**: Fix CI đỏ (2 tests):
   - `stripSttCarryRepeat('d','did')` → `''`: thêm nhánh ký-tự đơn đứng một mình (mirror cả `sidepanel.js`); `finalizeText()` đã skip utterance rỗng nên fragment mic-rơi không còn lọt transcript.
   - `summarySource` merge-prompt test: assertion cũ `not.toContain('drop early')` ngược với intent "cover whole meeting" — sửa thành `toContain('do not drop early parts')` (khớp prompt map-reduce giữ head).

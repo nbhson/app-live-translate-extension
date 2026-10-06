@@ -6,6 +6,74 @@
 function isGemini(baseUrl) { return String(baseUrl).includes('generativelanguage.googleapis.com'); }
 export { isGemini };
 
+/**
+ * Thinking toggle — ON (default) preserves current behavior (no extra params).
+ * OFF injects cross-backend "disable thinking/reasoning" params so custom
+ * providers (Gemini thinking, Anthropic extended thinking, Qwen/DeepSeek
+ * think, OpenAI reasoning, Ollama, OpenRouter gateways) skip chain-of-thought.
+ * Unknown fields are ignored by strict OpenAI servers, so sending the full
+ * set is safe.
+ */
+export function isThinkingEnabled(providerConfig, opts = {}) {
+  const v = opts?.thinkingEnabled ?? providerConfig?.thinkingEnabled ?? providerConfig?.thinking ?? true;
+  if (typeof v === 'string') return !/^(off|false|0|disabled|disable|no)$/i.test(v.trim());
+  return v !== false && v !== 0;
+}
+
+function geminiThinkingOffConfig() {
+  // Gemini 2.5+: thinkingBudget 0 + includeThoughts false disables thinking
+  return { thinkingConfig: { thinkingBudget: 0, includeThoughts: false } };
+}
+
+function openaiThinkingOffParams() {
+  return {
+    reasoning_effort: 'none',
+    reasoning: { effort: 'none', exclude: true },
+    thinking: { type: 'disabled' },
+    think: false,
+    enable_thinking: false,
+    chat_template_kwargs: { enable_thinking: false },
+  };
+}
+export { geminiThinkingOffConfig, openaiThinkingOffParams };
+
+/**
+ * Build an actionable Error for non-OK provider responses.
+ * - Reads the body as text once (providers return JSON, plain text like
+ *   Ollama's "Forbidden", or HTML from WAFs) and extracts a short detail.
+ * - 403 from local/Ollama almost always means Ollama rejected the
+ *   `chrome-extension://` origin → tell the user the exact fix
+ *   (restart Ollama with OLLAMA_ORIGINS="chrome-extension://*").
+ */
+export function friendlyProviderError(status, bodyText, baseUrl) {
+  let msg = `HTTP ${status}`;
+  const t = String(bodyText ?? '').slice(0, 500);
+  if (t) {
+    let detail = '';
+    try {
+      const d = JSON.parse(t);
+      const e = d?.error;
+      if (typeof e === 'string') detail = e;
+      else if (e && typeof e.message === 'string') detail = e.message;
+      else if (e && typeof e.msg === 'string') detail = e.msg;
+      else if (e && typeof e === 'object') detail = JSON.stringify(e).slice(0, 300);
+      else if (typeof d?.message === 'string') detail = d.message;
+    } catch {
+      // non-JSON body (plain text / HTML): keep short plain-text only, never raw HTML
+      if (t.length <= 200 && !/^\s*</.test(t)) detail = t;
+    }
+    detail = String(detail || '').trim().slice(0, 300);
+    if (detail) msg += `: ${detail}`;
+  }
+  const url = String(baseUrl || '');
+  const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+  const isOllama = /ollama/i.test(url);
+  if (Number(status) === 403 && (isLocal || isOllama)) {
+    msg += ' — Ollama blocked the extension origin. Restart Ollama with OLLAMA_ORIGINS="chrome-extension://*" (e.g. OLLAMA_ORIGINS="*" ollama serve), then retry.';
+  }
+  return new Error(msg);
+}
+
 export async function fetchWithTimeout(url, opts, timeout = 30000) {
   const ctrl = new AbortController();
   const signal = opts.signal;
@@ -93,8 +161,11 @@ export async function callProviderForSuggest(prompt, providerConfig, opts = {}) 
   }
 
   // Build JSON-mode aware payload helpers
+  const thinkingOn = isThinkingEnabled(providerConfig, opts);
+  const geminiThinkOff = thinkingOn ? {} : geminiThinkingOffConfig();
+  const openaiThinkOff = thinkingOn ? {} : openaiThinkingOffParams();
   function geminiJsonConfig(maxTokens) {
-    return { temperature: 0.8, maxOutputTokens: maxTokens, responseMimeType: 'application/json' };
+    return { temperature: 0.8, maxOutputTokens: maxTokens, responseMimeType: 'application/json', ...geminiThinkOff };
   }
   if (isGemini(baseUrl)) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
@@ -141,7 +212,7 @@ export async function callProviderForSuggest(prompt, providerConfig, opts = {}) 
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
         body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) }),
       }, timeout, 1);
-      if (!res.ok) { let msg = `HTTP ${res.status}`; try { const d = await res.json(); msg = d.error?.message || msg; } catch {} throw new Error(msg); }
+      if (!res.ok) { const bodyText = await res.text().catch(() => ''); throw friendlyProviderError(res.status, bodyText, baseUrl); }
       const data = await res.json();
       const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       if (txt && txt.trim()) return txt;
@@ -170,7 +241,7 @@ export async function callProviderForSuggest(prompt, providerConfig, opts = {}) 
             model, messages: [
               { role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },
               { role: 'user', content: curPrompt },
-            ], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' },
+            ], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' }, ...openaiThinkOff,
           }),
         }, timeout, 0);
         if (sRes.ok && sRes.body && sRes.body.getReader) {
@@ -205,7 +276,7 @@ export async function callProviderForSuggest(prompt, providerConfig, opts = {}) 
         model, messages: [
           { role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },
           { role: 'user', content: curPrompt },
-        ], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }),
+        ], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }), ...openaiThinkOff,
       };
       // Ollama Cloud không hỗ trợ response_format ổn định — gửi thẳng không có, tránh 400 + retry x2 chậm
       let res = await fetchWithRetry(url, { method: 'POST', headers, signal, body: JSON.stringify(payload) }, timeout, 1);
@@ -214,7 +285,7 @@ export async function callProviderForSuggest(prompt, providerConfig, opts = {}) 
         delete payload.response_format;
         res = await fetchWithRetry(url, { method: 'POST', headers, signal, body: JSON.stringify(payload) }, timeout, 0);
       }
-      if (!res.ok) { let msg = `HTTP ${res.status}`; try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {} throw new Error(msg); }
+      if (!res.ok) { const bodyText = await res.text().catch(() => ''); throw friendlyProviderError(res.status, bodyText, baseUrl); }
       const data = await res.json();
       let txt = data.choices?.[0]?.message?.content || '';
       if (!txt && data.message?.content) txt = data.message.content;
@@ -242,14 +313,17 @@ export async function callProviderGeneric(prompt, providerConfig, opts = {}) {
   const timeout = opts.timeout ?? 18000;
   const signal = opts.signal;
   if (!prompt || typeof prompt !== 'string') throw new Error('Empty prompt');
+  const thinkingOnGeneric = isThinkingEnabled(providerConfig, opts);
+  const geminiThinkOffGeneric = thinkingOnGeneric ? {} : geminiThinkingOffConfig();
+  const openaiThinkOffGeneric = thinkingOnGeneric ? {} : openaiThinkingOffParams();
   if (isGemini(baseUrl)) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
     const res = await fetchWithRetry(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal,
-      body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens } }),
+      body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens, ...geminiThinkOffGeneric } }),
     }, timeout, 1);
-    if (!res.ok) { let msg = `HTTP ${res.status}`; try { const d = await res.json(); msg = d.error?.message || msg; } catch {} throw new Error(msg); }
+    if (!res.ok) { const bodyText = await res.text().catch(() => ''); throw friendlyProviderError(res.status, bodyText, baseUrl); }
     const data = await res.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
   } else {
@@ -259,8 +333,8 @@ export async function callProviderGeneric(prompt, providerConfig, opts = {}) {
     const messages = [];
     if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
     messages.push({ role: 'user', content: prompt });
-    const res = await fetchWithRetry(url, { method: 'POST', headers, signal, body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens }) }, timeout, 1);
-    if (!res.ok) { let msg = `HTTP ${res.status}`; try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {} throw new Error(msg); }
+    const res = await fetchWithRetry(url, { method: 'POST', headers, signal, body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, ...openaiThinkOffGeneric }) }, timeout, 1);
+    if (!res.ok) { const bodyText = await res.text().catch(() => ''); throw friendlyProviderError(res.status, bodyText, baseUrl); }
     const data = await res.json();
     let txt = data.choices?.[0]?.message?.content || '';
     if (!txt && data.message?.content) txt = data.message.content;

@@ -45,7 +45,7 @@ export function createStore(initial = {}) {
     speakerMonitor: null,
     suggestContextPrompt: '',
     contextPromptSaveTimer: null,
-    providerConfig: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', apiKey: '', model: 'gemini-2.5-flash' },
+    providerConfig: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta', apiKey: '', model: 'gemini-2.5-flash', thinkingEnabled: true },
     ...initial,
   };
 

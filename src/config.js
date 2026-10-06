@@ -40,5 +40,6 @@ export const CONFIG = Object.freeze({
     providerBaseUrl: 'providerBaseUrl',
     providerApiKey: 'providerApiKey',
     providerModel: 'providerModel',
+    providerThinkingEnabled: 'providerThinkingEnabled',
   }),
 });

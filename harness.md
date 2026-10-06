@@ -1,6 +1,6 @@
 # Harness & Compression Agent — Live Translate Extension
 
-> Version: 1.4.1 · Date: 2026-10-03 · Scope: Chrome Extension (MV3) — `sidepanel.js` + `src/` + `background.js`
+> Version: 1.4.2 · Date: 2026-10-06 · Scope: Chrome Extension (MV3) — `sidepanel.js` + `src/` + `background.js`
 > Agent scope: **Compression + QuestionDetect supplement** (Suggestion/Summary giữ nguyên prompt chính) · Dock resizable + collapsible prompt
 
 ## 1. Tổng quan

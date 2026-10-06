@@ -47,6 +47,7 @@ const CONFIG = Object.freeze({
     providerBaseUrl: 'providerBaseUrl',
     providerApiKey: 'providerApiKey',
     providerModel: 'providerModel',
+    providerThinkingEnabled: 'providerThinkingEnabled',
   }),
 });
 const SILENCE_THRESHOLD = CONFIG.SILENCE_THRESHOLD;
@@ -308,6 +309,8 @@ const I18N = {
     cfg_base: 'Base URL', cfg_key: 'API Key', cfg_model: 'Model',
     cfg_key_help: 'Để trống nếu dùng Ollama trên máy.',
     cfg_model_help: 'Nhập chính xác tên model của provider.',
+    cfg_thinking: 'Thinking',
+    cfg_thinking_help: 'OFF = model trả lời trực tiếp, không reasoning/thinking (nhanh hơn).',
     cfg_save: 'Lưu cấu hình',
     cfg_foot_html: 'Hỗ trợ API tương thích OpenAI. Với Gemini dùng định dạng <code>generativelanguage</code>.',
     perm_title: 'Microphone permission required',
@@ -421,6 +424,8 @@ const I18N = {
     cfg_base: 'Base URL', cfg_key: 'API Key', cfg_model: 'Model',
     cfg_key_help: 'Leave empty for local Ollama.',
     cfg_model_help: 'Enter the exact provider model name.',
+    cfg_thinking: 'Thinking',
+    cfg_thinking_help: 'OFF = model answers directly without reasoning/thinking (faster).',
     cfg_save: 'Save configuration',
     cfg_foot_html: 'Supports OpenAI-compatible API. For Gemini use <code>generativelanguage</code> format.',
     perm_title: 'Microphone permission required',
@@ -724,12 +729,57 @@ const Harness = (() => {
 })();
 if (typeof window !== 'undefined') { try { window.Harness = Harness; } catch {} }
 
-// Provider config state (custom: baseUrl + apiKey + model)
+// Provider config state (custom: baseUrl + apiKey + model + thinkingEnabled)
 let providerConfig = {
   baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
   apiKey: '',
-  model: 'gemini-2.5-flash'
+  model: 'gemini-2.5-flash',
+  thinkingEnabled: true
 };
+/** Thinking toggle — ON (default) = current behavior; OFF disables model reasoning/thinking across backends */
+function isThinkingEnabledSide(cfg, opts) {
+  const v = (opts && opts.thinkingEnabled !== undefined) ? opts.thinkingEnabled : (cfg ? (cfg.thinkingEnabled !== undefined ? cfg.thinkingEnabled : cfg.thinking) : true);
+  if (typeof v === 'string') return !/^(off|false|0|disabled|disable|no)$/i.test(v.trim());
+  return v !== false && v !== 0;
+}
+function geminiThinkingOffConfigSide() { return { thinkingConfig: { thinkingBudget: 0, includeThoughts: false } }; }
+function openaiThinkingOffParamsSide() {
+  return {
+    reasoning_effort: 'none',
+    reasoning: { effort: 'none', exclude: true },
+    thinking: { type: 'disabled' },
+    think: false,
+    enable_thinking: false,
+    chat_template_kwargs: { enable_thinking: false },
+  };
+}
+/** Actionable error for non-OK provider responses (mirror of src friendlyProviderError). 403 from local/Ollama = blocked extension origin. */
+function friendlyProviderErrorSide(status, bodyText, baseUrl) {
+  let msg = `HTTP ${status}`;
+  const t = String(bodyText == null ? '' : bodyText).slice(0, 500);
+  if (t) {
+    let detail = '';
+    try {
+      const d = JSON.parse(t);
+      const e = d && d.error;
+      if (typeof e === 'string') detail = e;
+      else if (e && typeof e.message === 'string') detail = e.message;
+      else if (e && typeof e.msg === 'string') detail = e.msg;
+      else if (e && typeof e === 'object') { try { detail = JSON.stringify(e).slice(0, 300); } catch {} }
+      else if (d && typeof d.message === 'string') detail = d.message;
+    } catch {
+      if (t.length <= 200 && !/^\s*</.test(t)) detail = t;
+    }
+    detail = String(detail || '').trim().slice(0, 300);
+    if (detail) msg += ': ' + detail;
+  }
+  const url = String(baseUrl || '');
+  const isLocalSide = url.includes('localhost') || url.includes('127.0.0.1');
+  if (Number(status) === 403 && (isLocalSide || /ollama/i.test(url))) {
+    msg += ' — Ollama blocked the extension origin. Restart Ollama with OLLAMA_ORIGINS="chrome-extension://*" (e.g. OLLAMA_ORIGINS="*" ollama serve), then retry.';
+  }
+  return new Error(msg);
+}
 // keep alias for backward compat in storage
 let geminiConfig = providerConfig;
 
@@ -745,7 +795,7 @@ const DOM = Object.freeze({
   suggestToggle: $id('suggestToggle'), suggestionDock: $id('suggestionDock'), qCountBadge: $id('qCountBadge'), questionPills: $id('questionPills'), suggestionBody: $id('suggestionBody'), suggestEmpty: $id('suggestEmpty'), clearSuggestionsBtn: $id('clearSuggestionsBtn'),
   copyEnBtn: $id('copyEnBtn'), copyViBtn: $id('copyViBtn'), permissionOverlay: $id('permissionOverlay'), grantPermissionBtn: $id('grantPermissionBtn'), liveBadge: $id('liveBadge'), enWordCount: $id('enWordCount'), viWordCount: $id('viWordCount'), toastContainer: $id('toastContainer'),
   tabLive: $id('tabLive'), tabSummary: $id('tabSummary'), tabContext: $id('tabContext'), liveTabContent: $id('liveTabContent'), summaryTabContent: $id('summaryTabContent'), contextTabContent: $id('contextTabContent'),
-  settingsBtn: $id('settingsBtn'), settingsOverlay: $id('settingsOverlay'), closeSettingsBtn: $id('closeSettingsBtn'), baseUrlInput: $id('baseUrlInput'), apiKeyInput: $id('apiKeyInput'), toggleApiKeyVisibilityBtn: $id('toggleApiKeyVisibilityBtn'), modelInput: $id('modelInput'), geminiModelSelect: $id('geminiModelSelect'), saveSettingsBtn: $id('saveSettingsBtn'),
+  settingsBtn: $id('settingsBtn'), settingsOverlay: $id('settingsOverlay'), closeSettingsBtn: $id('closeSettingsBtn'), baseUrlInput: $id('baseUrlInput'), apiKeyInput: $id('apiKeyInput'), toggleApiKeyVisibilityBtn: $id('toggleApiKeyVisibilityBtn'), modelInput: $id('modelInput'), geminiModelSelect: $id('geminiModelSelect'), thinkingToggle: $id('thinkingToggle'), saveSettingsBtn: $id('saveSettingsBtn'),
   apiWarningCard: $id('apiWarningCard'), configNowBtn: $id('configNowBtn'), summaryLangSelect: $id('summaryLang'), summaryDetailSelect: $id('summaryDetail'), generateSummaryBtn: $id('generateSummaryBtn'), copySummaryBtn: $id('copySummaryBtn'), summaryPlaceholder: $id('summaryPlaceholder'), summaryMarkdown: $id('summaryMarkdown'), summaryLoading: $id('summaryLoading'), summaryContent: $id('summaryContent'),
   contextPromptInput: $id('contextPromptInput'), contextPromptBadge: $id('contextPromptBadge'), clearContextPromptBtn: $id('clearContextPromptBtn'), contextPromptWrap: $id('contextPromptWrap'), contextPromptToggle: $id('contextPromptToggle'), contextPromptCollapsible: $id('contextPromptCollapsible'),
   inspectorToggle: $id('inspectorToggle'), inspectorMeta: $id('inspectorMeta'), inspectorBody: $id('inspectorBody'), inspectorChevron: $id('inspectorChevron'), paneLive: $id('paneLive'), paneCompressed: $id('paneCompressed'), panePending: $id('panePending'), copyContextBtn: $id('copyContextBtn'),
@@ -757,7 +807,7 @@ const englishLog = DOM.englishLog; const englishInterim = DOM.englishInterim; co
 const transcriptFeed = DOM.transcriptFeed; const combinedPlaceholder = DOM.combinedPlaceholder; const transcriptContent = DOM.transcriptContent; const combinedWordCount = DOM.combinedWordCount; const interimBlock = DOM.interimBlock; const copyAllBtn = DOM.copyAllBtn; const suggestToggle = DOM.suggestToggle; const suggestionDock = DOM.suggestionDock; const qCountBadge = DOM.qCountBadge; const questionPills = DOM.questionPills; const suggestionBody = DOM.suggestionBody; const suggestEmpty = DOM.suggestEmpty; const clearSuggestionsBtn = DOM.clearSuggestionsBtn;
 const copyEnBtn = DOM.copyEnBtn; const copyViBtn = DOM.copyViBtn; const permissionOverlay = DOM.permissionOverlay; const grantPermissionBtn = DOM.grantPermissionBtn; const liveBadge = DOM.liveBadge; const enWordCount = DOM.enWordCount; const viWordCount = DOM.viWordCount; const toastContainer = DOM.toastContainer;
 const tabLive = DOM.tabLive; const tabSummary = DOM.tabSummary; const tabContext = DOM.tabContext; const liveTabContent = DOM.liveTabContent; const summaryTabContent = DOM.summaryTabContent; const contextTabContent = DOM.contextTabContent;
-const settingsBtn = DOM.settingsBtn; const settingsOverlay = DOM.settingsOverlay; const closeSettingsBtn = DOM.closeSettingsBtn; const baseUrlInput = DOM.baseUrlInput; const apiKeyInput = DOM.apiKeyInput; const toggleApiKeyVisibilityBtn = DOM.toggleApiKeyVisibilityBtn; const modelInput = DOM.modelInput; const geminiModelSelect = DOM.geminiModelSelect; const saveSettingsBtn = DOM.saveSettingsBtn;
+const settingsBtn = DOM.settingsBtn; const settingsOverlay = DOM.settingsOverlay; const closeSettingsBtn = DOM.closeSettingsBtn; const baseUrlInput = DOM.baseUrlInput; const apiKeyInput = DOM.apiKeyInput; const toggleApiKeyVisibilityBtn = DOM.toggleApiKeyVisibilityBtn; const modelInput = DOM.modelInput; const geminiModelSelect = DOM.geminiModelSelect; const thinkingToggle = DOM.thinkingToggle; const saveSettingsBtn = DOM.saveSettingsBtn;
 const apiWarningCard = DOM.apiWarningCard; const configNowBtn = DOM.configNowBtn; const summaryLangSelect = DOM.summaryLangSelect; const summaryDetailSelect = DOM.summaryDetailSelect; const generateSummaryBtn = DOM.generateSummaryBtn; const copySummaryBtn = DOM.copySummaryBtn; const summaryPlaceholder = DOM.summaryPlaceholder; const summaryMarkdown = DOM.summaryMarkdown; const summaryLoading = DOM.summaryLoading; const summaryContent = DOM.summaryContent;
 
 // --- Pure utils (testable, no side effects) ---
@@ -1877,7 +1927,10 @@ async function callProviderForSuggest(prompt, opts) {
   function shortenPromptForRetrySide(p) {
     return String(p).replace(/60-120 words/g, '30-60 words').replace(/3-5 sentences/g, '2-3 sentences');
   }
-  function geminiJsonConfig(max) { return { temperature: 0.8, maxOutputTokens: max, responseMimeType: 'application/json' }; }
+  const thinkingOn = isThinkingEnabledSide(providerConfig, opts);
+  const geminiThinkOff = thinkingOn ? {} : geminiThinkingOffConfigSide();
+  const openaiThinkOff = thinkingOn ? {} : openaiThinkingOffParamsSide();
+  function geminiJsonConfig(max) { return { temperature: 0.8, maxOutputTokens: max, responseMimeType: 'application/json', ...geminiThinkOff }; }
   let curMax = isGemini ? (opts.quality === 'fast' ? 512 : 1024) : isOllama ? (opts.quality === 'fast' ? 384 : 700) : (opts.quality === 'fast' ? 512 : 1024);
   let curPrompt = prompt;
   if (isGemini) {
@@ -1902,9 +1955,8 @@ async function callProviderForSuggest(prompt, opts) {
         body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) })
       }, 20000, 1);
       if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
-        throw new Error(msg);
+        const bodyText = await res.text().catch(() => '');
+        throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
       }
       const data = await res.json();
       const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -1922,7 +1974,7 @@ async function callProviderForSuggest(prompt, opts) {
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     if (opts.onChunk && !isLocal && !isOllama) {
       try {
-        const sRes = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' } }) });
+        const sRes = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' }, ...openaiThinkOff }) });
         if (sRes.ok && sRes.body && sRes.body.getReader) {
           const reader=sRes.body.getReader(); const dec=new TextDecoder(); let acc=''; let buf='';
           while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const d=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||''; if(d){acc+=d; try{opts.onChunk(acc);}catch{}}}catch{}} }
@@ -1932,13 +1984,12 @@ async function callProviderForSuggest(prompt, opts) {
     }
     let lastErr = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const payload = { model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }) };
+      const payload = { model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }), ...openaiThinkOff };
       let res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 1);
       if (!res.ok && res.status === 400 && !isOllama) { try{await res.text();}catch{} delete payload.response_format; res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 0); }
       if (!res.ok) {
-        let msg = `HTTP ${res.status}`;
-        try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
-        throw new Error(msg);
+        const bodyText = await res.text().catch(() => '');
+        throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
       }
       const data = await res.json();
       let txt = data.choices?.[0]?.message?.content || '';
@@ -1965,18 +2016,20 @@ async function callProviderGeneric(prompt, opts = {}) {
   const maxTokens = opts.maxTokens ?? 512;
   const systemPrompt = opts.systemPrompt || '';
   if (!prompt || typeof prompt !== 'string') throw new Error('Empty prompt');
+  const thinkingOnGeneric = isThinkingEnabledSide(providerConfig, opts);
+  const geminiThinkOffGeneric = thinkingOnGeneric ? {} : geminiThinkingOffConfigSide();
+  const openaiThinkOffGeneric = thinkingOnGeneric ? {} : openaiThinkingOffParamsSide();
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
     const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
     const res = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens } })
+      body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens, ...geminiThinkOffGeneric } })
     }, 18000, 1);
     if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { const d = await res.json(); msg = d.error?.message || msg; } catch {}
-      throw new Error(msg);
+      const bodyText = await res.text().catch(() => '');
+      throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
     }
     const data = await res.json();
     return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -1990,12 +2043,11 @@ async function callProviderGeneric(prompt, opts = {}) {
     const res = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens })
+      body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, ...openaiThinkOffGeneric })
     }, 18000, 1);
     if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { const d = await res.json(); msg = d.error?.message || d.error || msg; } catch {}
-      throw new Error(msg);
+      const bodyText = await res.text().catch(() => '');
+      throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
     }
     const data = await res.json();
     let txt = data.choices?.[0]?.message?.content || '';
@@ -3801,12 +3853,19 @@ function setupSettingsOverlay() {
     groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.1-8b-instant' }
   };
 
+  function syncThinkingLabel() {
+    const label = document.getElementById('thinkingToggleLabel');
+    if (label && thinkingToggle) label.textContent = thinkingToggle.checked ? 'ON' : 'OFF';
+  }
   function fillSettings() {
     if (baseUrlInput) baseUrlInput.value = providerConfig.baseUrl || '';
     if (apiKeyInput) apiKeyInput.value = providerConfig.apiKey || '';
     if (modelInput) modelInput.value = providerConfig.model || '';
     if (geminiModelSelect) geminiModelSelect.value = providerConfig.model || '';
+    if (thinkingToggle) thinkingToggle.checked = providerConfig.thinkingEnabled !== false;
+    syncThinkingLabel();
   }
+  if (thinkingToggle) thinkingToggle.addEventListener('change', syncThinkingLabel);
 
   settingsBtn.addEventListener('click', () => {
     fillSettings();
@@ -3848,6 +3907,7 @@ function setupSettingsOverlay() {
     const baseUrl = (baseUrlInput ? baseUrlInput.value.trim().replace(/\/+$/, '') : providerConfig.baseUrl);
     const key = apiKeyInput.value.trim();
     const model = (modelInput ? modelInput.value.trim() : (geminiModelSelect ? geminiModelSelect.value : ''));
+    const thinkingEnabled = thinkingToggle ? !!thinkingToggle.checked : (providerConfig.thinkingEnabled !== false);
 
     if (!baseUrl) { showToast('Please enter Base URL', 'error'); baseUrlInput && baseUrlInput.focus(); return; }
     try { new URL(baseUrl); } catch { showToast('Invalid Base URL', 'error'); return; }
@@ -3860,6 +3920,7 @@ function setupSettingsOverlay() {
       providerBaseUrl: baseUrl,
       providerApiKey: key,
       providerModel: model,
+      providerThinkingEnabled: thinkingEnabled,
       // keep legacy keys for compat
       geminiApiKey: key,
       geminiModel: model,
@@ -3869,6 +3930,7 @@ function setupSettingsOverlay() {
       providerConfig.baseUrl = baseUrl;
       providerConfig.apiKey = key;
       providerConfig.model = model;
+      providerConfig.thinkingEnabled = thinkingEnabled;
       geminiConfig = providerConfig;
       updateApiWarningState();
       settingsOverlay.style.display = 'none';
@@ -3888,13 +3950,15 @@ function setupSettingsOverlay() {
 // Load Provider Config from local storage (with migration from gemini keys)
 async function loadProviderConfig() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(['providerBaseUrl','providerApiKey','providerModel','geminiBaseUrl','geminiApiKey','geminiModel'], (result) => {
+    chrome.storage.local.get(['providerBaseUrl','providerApiKey','providerModel','providerThinkingEnabled','geminiBaseUrl','geminiApiKey','geminiModel'], (result) => {
       const baseUrl = result.providerBaseUrl || result.geminiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
       const apiKey = result.providerApiKey !== undefined ? result.providerApiKey : (result.geminiApiKey || '');
       const model = result.providerModel || result.geminiModel || 'gemini-2.5-flash';
+      const thinkingEnabled = result.providerThinkingEnabled !== undefined ? !!result.providerThinkingEnabled : true;
       providerConfig.baseUrl = baseUrl;
       providerConfig.apiKey = apiKey;
       providerConfig.model = model;
+      providerConfig.thinkingEnabled = thinkingEnabled;
       geminiConfig = providerConfig;
       resolve();
     });
@@ -4322,18 +4386,20 @@ async function callSummaryLLMSide(promptText) {
   const model = providerConfig.model;
   const apiKey = providerConfig.apiKey;
   const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  const thinkingOnSummary = isThinkingEnabledSide(providerConfig, {});
+  const geminiThinkOffSummary = thinkingOnSummary ? {} : geminiThinkingOffConfigSide();
+  const openaiThinkOffSummary = thinkingOnSummary ? {} : openaiThinkingOffParamsSide();
   let candidateText = '';
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }] })
+      body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }], ...(thinkingOnSummary ? {} : { generationConfig: { ...geminiThinkOffSummary } }) })
     });
     if (!response.ok) {
-      let errMsg = `HTTP ${response.status}`;
-      try { const errData = await response.json(); errMsg = errData.error?.message || errMsg; } catch {}
-      throw new Error(errMsg);
+      const bodyText = await response.text().catch(() => '');
+      throw friendlyProviderErrorSide(response.status, bodyText, baseUrl);
     }
     const data = await response.json();
     candidateText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
@@ -4350,13 +4416,13 @@ async function callSummaryLLMSide(promptText) {
           { role: 'system', content: 'You are a helpful meeting assistant that outputs clean Markdown.' },
           { role: 'user', content: promptText }
         ],
-        temperature: 0.7
+        temperature: 0.7,
+        ...openaiThinkOffSummary
       })
     });
     if (!response.ok) {
-      let errMsg = `HTTP ${response.status}`;
-      try { const errData = await response.json(); errMsg = errData.error?.message || errData.error || errMsg; } catch {}
-      throw new Error(errMsg);
+      const bodyText = await response.text().catch(() => '');
+      throw friendlyProviderErrorSide(response.status, bodyText, baseUrl);
     }
     const data = await response.json();
     candidateText = data.choices?.[0]?.message?.content || data.choices?.[0]?.text || '';

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { fetchWithTimeout, fetchWithRetry, callProviderForSuggest, callProviderGeneric, isGemini } from '../src/services/llm/provider.js';
+import { fetchWithTimeout, fetchWithRetry, callProviderForSuggest, callProviderGeneric, isGemini, friendlyProviderError } from '../src/services/llm/provider.js';
 
 function makeResp({ status = 200, body = {}, headersMap } = {}) {
   const headers = headersMap || new Map();
@@ -141,6 +141,32 @@ describe('callProviderForSuggest', () => {
   });
 });
 
+describe('friendlyProviderError', () => {
+  it('mentions OLLAMA_ORIGINS on 403 from local Ollama (plain-text body)', () => {
+    const err = friendlyProviderError(403, 'Forbidden', 'http://localhost:11434/v1');
+    expect(err.message).toContain('HTTP 403');
+    expect(err.message).toContain('OLLAMA_ORIGINS');
+  });
+
+  it('mentions OLLAMA_ORIGINS on 403 from 127.0.0.1', () => {
+    const err = friendlyProviderError(403, '', 'http://127.0.0.1:11434/v1');
+    expect(err.message).toContain('OLLAMA_ORIGINS');
+  });
+
+  it('does not mention OLLAMA_ORIGINS on 403 from remote provider', () => {
+    const err = friendlyProviderError(403, JSON.stringify({ error: { message: 'Access denied' } }), 'https://api.openai.com/v1');
+    expect(err.message).toContain('HTTP 403');
+    expect(err.message).toContain('Access denied');
+    expect(err.message).not.toContain('OLLAMA_ORIGINS');
+  });
+
+  it('extracts JSON error detail and never leaks raw HTML', () => {
+    const html = '<html><body><h1>403 Forbidden</h1>' + 'x'.repeat(600) + '</body></html>';
+    expect(friendlyProviderError(401, JSON.stringify({ error: 'bad key' }), 'https://api.openai.com/v1').message).toContain('bad key');
+    expect(friendlyProviderError(403, html, 'https://example.com/v1').message).toBe('HTTP 403');
+  });
+});
+
 describe('callProviderGeneric', () => {
   const cfg = { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-test', model: 'gpt-4o-mini' };
 
@@ -154,5 +180,17 @@ describe('callProviderGeneric', () => {
     })));
     const txt = await callProviderGeneric('Summarize', cfg, { systemPrompt: 'You are helper' });
     expect(txt).toBe('summary bullet');
+  });
+
+  it('throws OLLAMA_ORIGINS hint on 403 from local Ollama', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      headers: { get: () => null },
+      json: async () => { throw new Error('not json'); },
+      text: async () => 'Forbidden',
+    }));
+    await expect(callProviderGeneric('hi', { baseUrl: 'http://localhost:11434/v1', apiKey: '', model: 'llama3.1' }))
+      .rejects.toThrow('OLLAMA_ORIGINS');
   });
 });
