@@ -1,5 +1,10 @@
 node_modules/
 coverage/
 dist/
+.vite/
 .DS_Store
 *.log
+# Chrome extension pack artifacts (never commit signing keys)
+*.zip
+*.crx
+*.pem
