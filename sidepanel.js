@@ -3,7 +3,7 @@
 // Summary functions (generateSummary/parseMarkdown) intentionally untouched per spec.
 
 'use strict';
-try { performance.mark('sidepanel-js-start'); } catch {}
+try { performance.mark('sidepanel-js-start'); } catch { /* expected: performance API may be unavailable */ }
 
 /** @type {const} */
 const CONFIG = Object.freeze({
@@ -189,7 +189,7 @@ function setLiveView(name) {
       try {
         const dock = map.answers;
         if (dock) { dock.style.maxHeight = ''; dock.style.minHeight = ''; dock.style.height = ''; }
-      } catch {}
+      } catch (e) { console.error('[LiveTranslate] i18n dock style reset', e); }
       if (suggestionBody) suggestionBody.scrollTop = 0;
     }
   } catch (e) { console.warn('[setLiveView]', e); }
@@ -203,7 +203,7 @@ function setupTranscriptSettings() {
     const setOpen = (open) => {
       panel.hidden = !open;
       btn.setAttribute('aria-expanded', String(open));
-      try { localStorage.setItem('transcript_settings_open', open ? '1' : '0'); } catch {}
+      try { localStorage.setItem('transcript_settings_open', open ? '1' : '0'); } catch { /* expected: localStorage write */ }
     };
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -216,7 +216,7 @@ function setupTranscriptSettings() {
       if (e.key === 'Escape' && !panel.hidden) { setOpen(false); btn.focus(); }
     });
     let saved = null;
-    try { saved = localStorage.getItem('transcript_settings_open'); } catch {}
+    try { saved = localStorage.getItem('transcript_settings_open'); } catch { /* expected: localStorage read */ }
     if (saved === '1') setOpen(true);
   } catch (e) { console.warn('[setupTranscriptSettings]', e); }
 }
@@ -594,7 +594,7 @@ function applyI18n() {
       document.querySelectorAll('.ctx-preset[data-prompt]').forEach((b, i) => {
         if (prompts[i]) b.setAttribute('data-prompt', prompts[i]);
       });
-    } catch {}
+    } catch { /* expected: i18n DOM query guard */ }
     // Lang toggle button shows current language
     try {
       const lb = document.getElementById('langToggleBtn');
@@ -604,19 +604,19 @@ function applyI18n() {
         lb.setAttribute('aria-label', i18nT(appLang === 'vi' ? 'lang_btn_title_vi' : 'lang_btn_title_en'));
         lb.classList.toggle('lang-vi', appLang === 'vi');
       }
-    } catch {}
+    } catch { /* expected: i18n DOM query guard */ }
     // Re-render dynamic chrome in the new language
-    try { updateUIForListening(!!isListening); } catch {}
-    try { updateMemoryMeter(); } catch {}
-    try { updateWordCounts(); } catch {}
-    try { updateCompressToggleUI(); } catch {}
-    try { updateContextPromptBadge(false); } catch {}
-    try { if (typeof lastStatusMsg === 'string') showStatus(lastStatusMsg); } catch {}
-    try { updateDock(); } catch {}
+    try { updateUIForListening(!!isListening); } catch (e) { console.error('[LiveTranslate] updateUIForListening', e); }
+    try { updateMemoryMeter(); } catch (e) { console.error('[LiveTranslate] updateMemoryMeter', e); }
+    try { updateWordCounts(); } catch (e) { console.error('[LiveTranslate] updateWordCounts', e); }
+    try { updateCompressToggleUI(); } catch (e) { console.error('[LiveTranslate] updateCompressToggleUI', e); }
+    try { updateContextPromptBadge(false); } catch (e) { console.error('[LiveTranslate] updateContextPromptBadge', e); }
+    try { if (typeof lastStatusMsg === 'string') showStatus(lastStatusMsg); } catch (e) { console.error('[LiveTranslate] showStatus', e); }
+    try { updateDock(); } catch (e) { console.error('[LiveTranslate] updateDock', e); }
     try {
       const se = document.getElementById('suggestEmpty');
       if (se && se.textContent.trim()) se.textContent = i18nT('suggest_empty');
-    } catch {}
+    } catch { /* expected: i18n DOM query guard */ }
     // Existing transcript utterances keep old chrome text — refresh in place
     try {
       document.querySelectorAll('.q-flag').forEach((el) => { el.textContent = i18nT('q_flag'); });
@@ -625,17 +625,17 @@ function applyI18n() {
         if (!cache || !cache.root) return;
         const spk = (cache._speakerId !== undefined) ? cache._speakerId
           : (typeof utteranceSpeakers !== 'undefined' ? utteranceSpeakers[idx] : undefined);
-        if (spk !== undefined && typeof applySpeakerToDom === 'function') { try { applySpeakerToDom(cache, spk); } catch {} }
+        if (spk !== undefined && typeof applySpeakerToDom === 'function') { try { applySpeakerToDom(cache, spk); } catch (e) { console.error('[LiveTranslate] applySpeakerToDom', e); } }
       });
-    } catch {}
+    } catch (e) { console.error('[LiveTranslate] applySpeakerToDom (i18n sweep)', e); }
   } catch (e) { console.warn('[applyI18n]', e); }
 }
 function setAppLang(lang, persist = true) {
   if (lang !== 'vi' && lang !== 'en') return;
   appLang = lang;
   if (persist) {
-    try { localStorage.setItem('app_lang', lang); } catch {}
-    try { if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.set({ app_lang: lang }); } catch {}
+    try { localStorage.setItem('app_lang', lang); } catch { /* expected: localStorage write */ }
+    try { if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.set({ app_lang: lang }); } catch { /* expected: chrome.storage write */ }
   }
   applyI18n();
 }
@@ -643,7 +643,7 @@ function setAppLang(lang, persist = true) {
 function setupLangToggle() {
   try {
     let saved = null;
-    try { saved = localStorage.getItem('app_lang'); } catch {}
+    try { saved = localStorage.getItem('app_lang'); } catch { /* expected: localStorage read */ }
     if (saved === 'vi' || saved === 'en') appLang = saved;
     try {
       if (window.chrome && chrome.storage && chrome.storage.local) {
@@ -651,7 +651,7 @@ function setupLangToggle() {
           if (r && (r.app_lang === 'vi' || r.app_lang === 'en') && r.app_lang !== appLang) setAppLang(r.app_lang, false);
         });
       }
-    } catch {}
+    } catch { /* expected: chrome.storage read */ }
     const btn = document.getElementById('langToggleBtn');
     if (btn) btn.addEventListener('click', () => setAppLang(appLang === 'vi' ? 'en' : 'vi'));
     applyI18n();
@@ -727,7 +727,7 @@ const Harness = (() => {
     },
   });
 })();
-if (typeof window !== 'undefined') { try { window.Harness = Harness; } catch {} }
+if (typeof window !== 'undefined') { try { window.Harness = Harness; } catch { /* expected: extension runtime may block window props */ } }
 
 // Provider config state (custom: baseUrl + apiKey + model + thinkingEnabled)
 let providerConfig = {
@@ -765,7 +765,7 @@ function friendlyProviderErrorSide(status, bodyText, baseUrl) {
       if (typeof e === 'string') detail = e;
       else if (e && typeof e.message === 'string') detail = e.message;
       else if (e && typeof e.msg === 'string') detail = e.msg;
-      else if (e && typeof e === 'object') { try { detail = JSON.stringify(e).slice(0, 300); } catch {} }
+      else if (e && typeof e === 'object') { try { detail = JSON.stringify(e).slice(0, 300); } catch { /* expected: JSON.stringify may throw on circular error objects */ } }
       else if (d && typeof d.message === 'string') detail = d.message;
     } catch {
       if (t.length <= 200 && !/^\s*</.test(t)) detail = t;
@@ -898,8 +898,8 @@ function setupDockResizer() {
   if (!resizer || !dock) return;
   // New UI: Answers is a full-area live-view (resizer hidden via CSS).
   // Legacy drag/resize + saved px heights would lock the dock tiny — clear them.
-  try { dock.style.maxHeight = ''; dock.style.minHeight = ''; dock.style.height = ''; } catch {}
-  try { localStorage.removeItem('dockHeight'); localStorage.removeItem('dockExpanded'); } catch {}
+  try { dock.style.maxHeight = ''; dock.style.minHeight = ''; dock.style.height = ''; } catch (e) { console.error('[LiveTranslate] dock style reset', e); }
+  try { localStorage.removeItem('dockHeight'); localStorage.removeItem('dockExpanded'); } catch { /* expected: localStorage remove */ }
   if (expandBtn) expandBtn.style.display = 'none';
   return;
 }
@@ -940,7 +940,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await checkAndHidePermissionOverlay();
     updateWordCounts(); updateDock();
     performance.mark('sidepanel-critical-ready');
-    try { performance.measure('sidepanel-critical', 'sidepanel-js-start', 'sidepanel-critical-ready'); } catch {}
+    try { performance.measure('sidepanel-critical', 'sidepanel-js-start', 'sidepanel-critical-ready'); } catch { /* expected: performance.measure unavailable */ }
   } catch (err) { console.error('[init-critical]', err); showToast('Initialization error', 'error'); }
 
   // Non-critical — defer to idle so first paint not blocked by 343KB compromise / settings
@@ -950,7 +950,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await Promise.all([loadCompressPref(), loadContextPrompt()]);
       updateCompressToggleUI(); updateDock(); updateContextInspector();
       performance.mark('sidepanel-ready');
-      try { performance.measure('sidepanel-full', 'sidepanel-js-start', 'sidepanel-ready'); } catch {}
+      try { performance.measure('sidepanel-full', 'sidepanel-js-start', 'sidepanel-ready'); } catch { /* expected: performance.measure unavailable */ }
       // Preload NLP in background after UI is ready (non-blocking)
       onIdle(() => { void ensureNlpLoaded(); });
     } catch (e) { console.warn('[init-idle]', e); }
@@ -1024,7 +1024,7 @@ function updateCompressToggleUI() {
   else { statusEl.classList.remove('has-content'); statusEl.textContent = i18nT('cmp_waiting'); }
   const manualBtn = document.getElementById('manualCompressBtn');
   if (manualBtn) { manualBtn.style.display = compressEnabled ? 'inline-block' : 'none'; manualBtn.disabled = !!compressInProgress || pending < 2; manualBtn.title = pending < 2 ? i18nT('cmp_manual_empty') : i18nT('cmp_manual_title', { n: pending }); }
-  try { updateContextInspector(); } catch {}
+  try { updateContextInspector(); } catch (e) { console.error('[LiveTranslate] updateContextInspector', e); }
 }
 
 /** Context Inspector — show what LLM actually sees (live vs compressed) */
@@ -1248,10 +1248,10 @@ async function startTabCapture() {
 
 /** Cleanup tab capture — idempotent, no throw */
 function cleanupTabCapture() {
-  try { teardownSpeakerMonitor(); } catch {}
-  if (window.capturedStream) { try { window.capturedStream.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {} window.capturedStream = null; }
+  try { teardownSpeakerMonitor(); } catch (e) { console.error('[LiveTranslate] teardownSpeakerMonitor', e); }
+  if (window.capturedStream) { try { window.capturedStream.getTracks().forEach(t => { try { t.stop(); } catch { /* expected: cleanup: stop capture tracks */ } }); } catch { /* expected: cleanup: stop capture tracks */ } window.capturedStream = null; }
   activeAudioTrack = null; syncState();
-  if (window.capturedAudioContext) { try { const ctx = window.capturedAudioContext; if (ctx.state !== 'closed') void ctx.close(); } catch {} window.capturedAudioContext = null; try { if (window.capturedSource) window.capturedSource.disconnect(); } catch {} window.capturedSource = null; }
+  if (window.capturedAudioContext) { try { const ctx = window.capturedAudioContext; if (ctx.state !== 'closed') void ctx.close(); } catch { /* expected: cleanup: close AudioContext */ } window.capturedAudioContext = null; try { if (window.capturedSource) window.capturedSource.disconnect(); } catch { /* expected: cleanup: close AudioContext */ } window.capturedSource = null; }
 }
 
 /**
@@ -1319,8 +1319,8 @@ function setupSpeakerMonitor(stream) {
 /** Teardown monitor — idempotent, clears interval, suspends context */
 function teardownSpeakerMonitor() {
   if (speakerMonitor && speakerMonitor.timer) { clearInterval(speakerMonitor.timer); speakerMonitor.timer = null; }
-  if (speakerMonitor && speakerMonitor._visHandler && typeof document!=='undefined') try{ document.removeEventListener('visibilitychange', speakerMonitor._visHandler);}catch{}
-  if (speakerMonitor && speakerMonitor.ctx && speakerMonitor.ctx.state === 'running') { try { void speakerMonitor.ctx.suspend(); } catch {} }
+  if (speakerMonitor && speakerMonitor._visHandler && typeof document!=='undefined') try{ document.removeEventListener('visibilitychange', speakerMonitor._visHandler);}catch { /* expected: cleanup: removeEventListener */ }
+  if (speakerMonitor && speakerMonitor.ctx && speakerMonitor.ctx.state === 'running') { try { void speakerMonitor.ctx.suspend(); } catch { /* expected: cleanup: suspend AudioContext */ } }
   speakerMonitor = null; speakerVadState = 'silence'; speakerVadSilenceMs = 0; syncState();
 }
 /**
@@ -1403,9 +1403,9 @@ function stopListening() {
   if (recognition) { try { recognition.stop(); } catch (e) { console.warn('[stopListening] stop', e); } }
   if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; syncState(); }
   if (liveViDebounce) { clearTimeout(liveViDebounce); liveViDebounce = null; }
-  if (liveViController) { try { liveViController.abort(); } catch {} liveViController = null; }
+  if (liveViController) { try { liveViController.abort(); } catch { /* expected: defensive: abort() does not throw */ } liveViController = null; }
   abortAllPendingTranslations(); teardownSpeakerMonitor();
-  if (window.micMonitorStream) { try { window.micMonitorStream.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {} window.micMonitorStream = null; }
+  if (window.micMonitorStream) { try { window.micMonitorStream.getTracks().forEach(t => { try { t.stop(); } catch { /* expected: cleanup: stop mic monitor tracks */ } }); } catch { /* expected: cleanup: stop mic monitor tracks */ } window.micMonitorStream = null; }
   cleanupTabCapture(); stopCompressTimer(); updateUIForListening(false); showStatus('Stopped');
 }
 
@@ -1574,9 +1574,9 @@ function isQuestion(text) {
       // we keep heuristic below even if nlp exists
     } else {
       // NLP not loaded yet — load in background for next questions (heuristics below still work now)
-      try { void ensureNlpLoaded(); } catch {}
+      try { void ensureNlpLoaded(); } catch (e) { console.error('[LiveTranslate] ensureNlpLoaded (background load)', e); }
     }
-  } catch (_) {}
+  } catch (e) { console.error('[LiveTranslate] suggest question pipeline', e); }
 
   if (t.endsWith('!')) {
     if (/^what\s+a(n)?\b/i.test(t)) return false;
@@ -1695,8 +1695,8 @@ function buildAiDetectPromptSide(text){
 }
 function parseAiDetectResponseSide(raw){
   if(!raw||typeof raw!=='string') return []; let s=raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/i,'').trim();
-  try{ const m=s.match(/\{[\s\S]*\}/); if(m){ const obj=JSON.parse(m[0].replace(/,\s*([}\]])/g,'$1')); if(obj&&Array.isArray(obj.questions)) return obj.questions.slice(0,4).map(q=>String(q).trim()).filter(q=>q.length>=5&&q.length<=200).map(q=>q.replace(/\s+/g,' ').trim()); if(Array.isArray(obj)) return obj.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch(_){}
-  try{ const m2=s.match(/\[[\s\S]*\]/); if(m2){ const arr=JSON.parse(m2[0].replace(/,\s*([}\]])/g,'$1')); if(Array.isArray(arr)) return arr.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch(_){}
+  try{ const m=s.match(/\{[\s\S]*\}/); if(m){ const obj=JSON.parse(m[0].replace(/,\s*([}\]])/g,'$1')); if(obj&&Array.isArray(obj.questions)) return obj.questions.slice(0,4).map(q=>String(q).trim()).filter(q=>q.length>=5&&q.length<=200).map(q=>q.replace(/\s+/g,' ').trim()); if(Array.isArray(obj)) return obj.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch (_){ /* expected: lenient JSON.parse fallback */ }
+  try{ const m2=s.match(/\[[\s\S]*\]/); if(m2){ const arr=JSON.parse(m2[0].replace(/,\s*([}\]])/g,'$1')); if(Array.isArray(arr)) return arr.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch (_){ /* expected: lenient JSON.parse fallback */ }
   return [];
 }
 function validateAiQuestionsSide(original, questions){
@@ -1745,7 +1745,7 @@ async function splitUtteranceAtSide(idx, newQs){
   if(lastCompressedIdx>idx) lastCompressedIdx+=shift;
   // DOM: remove old root if exists
   const oldCache=utteranceDomCache[idx];
-  if(oldCache&&oldCache.root&&oldCache.root.parentNode){ try{ oldCache.root.remove(); }catch{} }
+  if(oldCache&&oldCache.root&&oldCache.root.parentNode){ try{ oldCache.root.remove(); }catch (e) { console.error('[LiveTranslate] stale cache root remove', e); } }
   // rebuild cache array: splice
   utteranceDomCache.splice(idx,1);
   // insert new DOMs sequentially; due to prepend (newest on top) we need to insert in reverse visual order
@@ -1771,7 +1771,7 @@ async function splitUtteranceAtSide(idx, newQs){
   translateBatchConcurrent(tasks, MAX_CONCURRENT_TRANSLATE).catch(()=>{});
   // trigger suggest for each new question
   for(let i=0;i<newQs.length;i++){ const nIdx=idx+i; const q=newQs[i]; if(isQuestion(q)) triggerSuggestForIndex(nIdx,q); }
-  syncState(); updateDock(); try{ updateContextInspector(); }catch{}
+  syncState(); updateDock(); try{ updateContextInspector(); }catch (e) { console.error('[LiveTranslate] updateContextInspector', e); }
   autoScroll(true);
   return true;
 }
@@ -1881,8 +1881,8 @@ async function fetchWithRetrySidepanel(url, fetchOpts, timeoutMs = 30000, maxRet
       const retryable = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
       if (retryable && attempt < maxRetries) {
         let delay = Math.pow(2, attempt) * 500 + Math.random() * 300;
-        try { const ra = res.headers.get('Retry-After'); if (ra) delay = Math.max(delay, parseInt(ra, 10) * 1000); } catch {}
-        try { await res.text(); } catch {}
+        try { const ra = res.headers.get('Retry-After'); if (ra) delay = Math.max(delay, parseInt(ra, 10) * 1000); } catch (e) { console.error('[LiveTranslate] Retry-After header parse', e); }
+        try { await res.text(); } catch { /* expected: discard error response body */ }
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
@@ -1894,7 +1894,7 @@ async function fetchWithRetrySidepanel(url, fetchOpts, timeoutMs = 30000, maxRet
       throw e;
     } finally {
       clearTimeout(t);
-      if (external && abortHandler) try { external.removeEventListener('abort', abortHandler); } catch {}
+      if (external && abortHandler) try { external.removeEventListener('abort', abortHandler); } catch { /* expected: cleanup: removeEventListener */ }
     }
   }
   throw lastErr || new Error('fetch failed');
@@ -1942,7 +1942,7 @@ async function callProviderForSuggest(prompt, opts) {
         const sRes = await fetch(streamUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) }) });
         if (sRes.ok && sRes.body && sRes.body.getReader) {
           const reader = sRes.body.getReader(); const dec = new TextDecoder(); let acc=''; let buf='';
-          while (true) { const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const ch=j.candidates?.[0]?.content?.parts?.[0]?.text||''; if(ch){acc+=ch; try{opts.onChunk(acc);}catch{}}}catch{}} }
+          while (true) { const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const ch=j.candidates?.[0]?.content?.parts?.[0]?.text||''; if(ch){acc+=ch; try{opts.onChunk(acc);}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }}}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }} }
           if (acc && acc.trim()) return acc;
         }
       } catch(e){ console.warn('[provider] Gemini stream fallback', e.message); }
@@ -1977,7 +1977,7 @@ async function callProviderForSuggest(prompt, opts) {
         const sRes = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' }, ...openaiThinkOff }) });
         if (sRes.ok && sRes.body && sRes.body.getReader) {
           const reader=sRes.body.getReader(); const dec=new TextDecoder(); let acc=''; let buf='';
-          while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const d=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||''; if(d){acc+=d; try{opts.onChunk(acc);}catch{}}}catch{}} }
+          while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const d=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||''; if(d){acc+=d; try{opts.onChunk(acc);}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }}}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }} }
           if(acc && acc.trim()) return acc;
         }
       } catch(e){ console.warn('[provider] OpenAI stream fallback', e.message); }
@@ -1986,7 +1986,7 @@ async function callProviderForSuggest(prompt, opts) {
     for (let attempt = 0; attempt < 2; attempt++) {
       const payload = { model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }), ...openaiThinkOff };
       let res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 1);
-      if (!res.ok && res.status === 400 && !isOllama) { try{await res.text();}catch{} delete payload.response_format; res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 0); }
+      if (!res.ok && res.status === 400 && !isOllama) { try{await res.text();}catch { /* expected: discard error response body */ } delete payload.response_format; res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 0); }
       if (!res.ok) {
         const bodyText = await res.text().catch(() => '');
         throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
@@ -2112,7 +2112,7 @@ async function performCompression(isManual = false) {
     compressedSummary = (compressedSummary ? compressedSummary + header + '\n' : '') + clean;
     if (compressedSummary.length > COMPRESSED_SUMMARY_MAX_CHARS) compressedSummary = compressedSummary.slice(-COMPRESSED_SUMMARY_MAX_CHARS);
     lastCompressedIdx = finalizedEnPhrases.length;
-    try { await storageSet({ compressedSummary, lastCompressedIdx }); } catch {}
+    try { await storageSet({ compressedSummary, lastCompressedIdx }); } catch (e) { console.error('[LiveTranslate] persist compressed summary', e); }
     syncState();
     updateCompressToggleUI();
     if (isManual) showToast(`Compressed ${pendingCount} sentences`, 'success');
@@ -2176,7 +2176,7 @@ function parseSuggestAnswers(raw) {
       }
     }
   } catch(_) {
-    try{ const {structures:ls,answers:la}=extractLenientArraysSide(noFence); let answers=la.filter(a=>!isStructureLike(a)).filter(Boolean).slice(0,5); let structures=ls.filter(s=>s.length>=3).slice(0,5); if(answers.length||structures.length) return {structures, answers}; }catch{}
+    try{ const {structures:ls,answers:la}=extractLenientArraysSide(noFence); let answers=la.filter(a=>!isStructureLike(a)).filter(Boolean).slice(0,5); let structures=ls.filter(s=>s.length>=3).slice(0,5); if(answers.length||structures.length) return {structures, answers}; }catch (e) { console.error('[LiveTranslate] lenient suggest-array extraction', e); }
   }
   try {
     const m = noFence.match(/\[[\s\S]*\]/);
@@ -2184,7 +2184,7 @@ function parseSuggestAnswers(raw) {
       const arr = tryParse(m[0]);
       if (Array.isArray(arr)) return { structures: [], answers: arr.slice(0,5).map(s => String(s).trim()).filter(Boolean) };
     }
-  } catch {}
+  } catch { /* expected: tryParse fallback */ }
   const lines = noFence.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').replace(/^["']|["']$/g,'').trim()).filter(s=>s.length>=3).slice(0,5);
   if (lines.length===1 && /^\{[\s\S]*\}$/.test(lines[0]) && /"structures"|"answers"/.test(lines[0])) return { structures: [], answers: [] };
   if (lines.length>0 && lines.every(l => /^\{|\["/.test(l) && /"structures"|"answers"/.test(l))) return { structures: [], answers: [] };
@@ -2278,7 +2278,7 @@ async function triggerSuggestForIndex(idx, question) {
               streamingShown = true;
             }
           }
-        } catch {}
+        } catch (e) { console.error('[LiveTranslate] parseSuggestAnswers', e); }
       };
       const raw = await callProviderForSuggest(prompt, { onChunk });
       const parsed = parseSuggestAnswers(raw);
@@ -2363,7 +2363,7 @@ function updateDock() {
         answersBadge.classList.remove('ping');
       }
     }
-  } catch {}
+  } catch (e) { console.error('[LiveTranslate] answers badge update', e); }
   // pills
   if (questionPills) {
     questionPills.innerHTML = '';
@@ -2399,7 +2399,7 @@ function updateDock() {
         questionPills.scrollLeft = questionPills.scrollWidth;
         const active = questionPills.querySelector('.q-pill.active');
         if (active && active.scrollIntoView) active.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'end' });
-      } catch {}
+      } catch (e) { console.error('[LiveTranslate] question pills scroll update', e); }
     });
   }
 }
@@ -2487,7 +2487,7 @@ function renderDockBody() {
       const act = btn.getAttribute('data-act');
       if (act === 'speak') {
         const txt = btn.getAttribute('data-text') || '';
-        if (txt) { try { speakTextPorted(txt, 'en-US'); } catch {} }
+        if (txt) { try { speakTextPorted(txt, 'en-US'); } catch (e) { console.error('[LiveTranslate] speakTextPorted (live pill)', e); } }
         return;
       }
       const txt = btn.getAttribute('data-text');
@@ -2508,7 +2508,7 @@ function renderDockBody() {
     btn.addEventListener('click', ()=>{
       const rIdx = Number(btn.getAttribute('data-idx'));
       const txt = (questionSuggestions[rIdx] && questionSuggestions[rIdx].question) || finalizedEnPhrases[rIdx] || '';
-      if (txt) { try { speakTextPorted(txt, 'en-US'); } catch {} }
+      if (txt) { try { speakTextPorted(txt, 'en-US'); } catch (e) { console.error('[LiveTranslate] speakTextPorted (answer pill)', e); } }
     });
   });
 }
@@ -2777,7 +2777,7 @@ async function finalizeText(text) {
         }
         const removedCache = utteranceDomCache.pop();
         if (removedCache && removedCache.root && removedCache.root.parentNode) {
-          try { removedCache.root.remove(); } catch {}
+          try { removedCache.root.remove(); } catch (e) { console.error('[LiveTranslate] removed cache root remove', e); }
         }
         // adjust selectedQuestionIdx and suggestions map (shift indices)
         // Note: compactTranscriptMemory already handled indices, now we manually shift
@@ -2925,7 +2925,7 @@ async function finalizeText(text) {
     const idx = firstIdx + k;
     handleAiVerifyForIndexSide(idx, u).catch(()=>{});
   });
-  updateCompressToggleUI(); try { updateContextInspector(); } catch {}
+  updateCompressToggleUI(); try { updateContextInspector(); } catch (e) { console.error('[LiveTranslate] updateContextInspector', e); }
 }
 
 /** @param {string} text @param {number} rawLength @returns {Promise<void>} */
@@ -3004,16 +3004,16 @@ const MYMEMORY_ENDPOINT_SIDE = 'https://api.mymemory.translated.net/get';
 const LINGVA_ENDPOINTS_SIDE = ['https://lingva.ml/api/v1/en/vi', 'https://lingva.thedaviddelta.com/api/v1/en/vi'];
 function fetchWithTimeoutSide(url, { signal, timeoutMs = 8000 } = {}) {
   const ctrl = new AbortController();
-  const t = setTimeout(() => { try { ctrl.abort(); } catch {} }, timeoutMs);
+  const t = setTimeout(() => { try { ctrl.abort(); } catch { /* expected: defensive: abort() does not throw */ } }, timeoutMs);
   let onAbort = null;
   if (signal) {
     if (signal.aborted) { clearTimeout(t); return Promise.reject(new DOMException('Aborted', 'AbortError')); }
-    onAbort = () => { try { ctrl.abort(); } catch {} };
+    onAbort = () => { try { ctrl.abort(); } catch { /* expected: defensive: abort() does not throw */ } };
     signal.addEventListener('abort', onAbort, { once: true });
   }
   return fetch(url, { signal: ctrl.signal }).finally(() => {
     clearTimeout(t);
-    if (signal && onAbort) try { signal.removeEventListener('abort', onAbort); } catch {}
+    if (signal && onAbort) try { signal.removeEventListener('abort', onAbort); } catch { /* expected: cleanup: removeEventListener */ }
   });
 }
 function chunkForMyMemorySide(text, maxLen) {
@@ -3061,7 +3061,7 @@ async function translateViaLingvaSide(text, opts = {}) {
     try { res = await fetchWithTimeoutSide(`${base.replace(/\/+$/, '')}/${encodeURIComponent(trimmed)}`, { signal: opts.signal, timeoutMs: CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS }); }
     catch (e) { if (e?.name === 'AbortError') return ''; continue; }
     if (!res?.ok) continue;
-    try { const data = await res.json(); const out = String(data?.translation || '').trim(); if (out) return out; } catch {}
+    try { const data = await res.json(); const out = String(data?.translation || '').trim(); if (out) return out; } catch (e) { console.error('[LiveTranslate] translation response json()', e); }
   }
   return '';
 }
@@ -3124,7 +3124,7 @@ async function translateText(text, opts = {}) {
       console.warn(`[translate] fallback via ${via}:`, trimmed.slice(0, 60));
       return fb;
     }
-  } catch {}
+  } catch (e) { console.error('[LiveTranslate] translateWithFallbackChainSide', e); }
   return '';
 }
 async function translateViaGoogleSide(text, opts = {}) {
@@ -3160,7 +3160,7 @@ async function translateViaGoogleSide(text, opts = {}) {
     const hasExternalSignal=!!opts.signal;
     const signal=hasExternalSignal? opts.signal : controller.signal;
     if (!hasExternalSignal) activeTranslateControllers.add(controller);
-    const timeoutId=setTimeout(()=>{ try{controller.abort();}catch{} }, CONFIG.TRANSLATE_TIMEOUT_MS);
+    const timeoutId=setTimeout(()=>{ try{controller.abort();}catch { /* expected: defensive: abort() does not throw */ } }, CONFIG.TRANSLATE_TIMEOUT_MS);
     let externalAbortHandler=null;
     if (hasExternalSignal && opts.signal!==controller.signal) {
       externalAbortHandler=()=>controller.abort();
@@ -3173,8 +3173,8 @@ async function translateViaGoogleSide(text, opts = {}) {
         const status=response.status;
         if ((status===429 || status>=500) && attempt<retries) {
           let delay=Math.pow(2,attempt)*400+Math.random()*200;
-          try{ const ra=response.headers.get('Retry-After'); if(ra) delay=Math.max(delay, parseInt(ra,10)*1000);}catch{}
-          try{ await response.text(); }catch{}
+          try{ const ra=response.headers.get('Retry-After'); if(ra) delay=Math.max(delay, parseInt(ra,10)*1000);}catch (e) { console.error('[LiveTranslate] Retry-After header parse', e); }
+          try{ await response.text(); }catch { /* expected: discard error response body */ }
           await new Promise(r=>setTimeout(r, delay));
           continue;
         }
@@ -3199,7 +3199,7 @@ async function translateViaGoogleSide(text, opts = {}) {
       await new Promise(r=>setTimeout(r, Math.pow(2,attempt)*300)).catch(()=>{});
     } finally {
       clearTimeout(timeoutId);
-      if (externalAbortHandler) try{ opts.signal.removeEventListener('abort', externalAbortHandler);}catch{}
+      if (externalAbortHandler) try{ opts.signal.removeEventListener('abort', externalAbortHandler);}catch { /* expected: cleanup: removeEventListener */ }
       activeTranslateControllers.delete(controller);
     }
   }
@@ -3209,7 +3209,7 @@ async function translateViaGoogleSide(text, opts = {}) {
 
 /** Abort all pending translate fetches — idempotent */
 function abortAllPendingTranslations() {
-  for (const c of activeTranslateControllers) { try { c.abort(); } catch {} }
+  for (const c of activeTranslateControllers) { try { c.abort(); } catch (e) { console.error('[LiveTranslate] abort pending translations', e); } }
   activeTranslateControllers.clear();
 }
 
@@ -3256,7 +3256,7 @@ let liveViDebounce = null; let liveViController = null;
  */
 function debouncedTranslateInterim(text) {
   if (liveViDebounce) { clearTimeout(liveViDebounce); liveViDebounce = null; }
-  if (liveViController) { try { liveViController.abort(); } catch {} liveViController = null; }
+  if (liveViController) { try { liveViController.abort(); } catch { /* expected: defensive: abort() does not throw */ } liveViController = null; }
   if (!text || String(text).trim().length < 8) return;
   liveViDebounce = setTimeout(async () => {
     const trimmed = String(text).trim(); if (!trimmed) return;
@@ -3330,7 +3330,7 @@ function buildQuestionCta() {
       else if (typeof updateDock === 'function') updateDock();
       const dock = document.getElementById('suggestionDock');
       if (dock && dock.scrollIntoView) dock.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    } catch {}
+    } catch { /* expected: closest() DOM traversal guard */ }
   });
   return cta;
 }
@@ -3454,7 +3454,7 @@ function buildUtteranceDom(idx, en, vi) {
   speakBtn.title = 'Speak English (TTS)';
   speakBtn.textContent = '🔊 EN';
   speakBtn.addEventListener('click', () => {
-    try { speakTextPorted(en, 'en-US'); } catch {}
+    try { speakTextPorted(en, 'en-US'); } catch (e) { console.error('[LiveTranslate] speakTextPorted (summary)', e); }
   });
   copyRow.appendChild(speakBtn);
   root.appendChild(copyRow);
@@ -3560,7 +3560,7 @@ function compactTranscriptMemory() {
   utteranceDomCache.forEach((c, oldIdx) => {
     if (!c) return;
     const newIdx = oldIdx - n;
-    if (newIdx < 0) { try { if (c.root && c.root.parentNode && !c.isLive) c.root.remove(); } catch {} return; }
+    if (newIdx < 0) { try { if (c.root && c.root.parentNode && !c.isLive) c.root.remove(); } catch (e) { console.error('[LiveTranslate] stale cache root remove', e); } return; }
     newCache[newIdx] = c;
     if (c.root) c.root.dataset.index = newIdx;
     if (typeof c.idx === 'number') c.idx = newIdx;
@@ -3722,7 +3722,7 @@ function updateUIForListening(active) {
     if (playIcon) playIcon.style.display = 'none';
     if (stopIcon) stopIcon.style.display = 'block';
     btnText.innerText = i18nT('stop_live');
-    try { if (logoDot) logoDot.classList.add('listening'); } catch {}
+    try { if (logoDot) logoDot.classList.add('listening'); } catch (e) { console.error('[LiveTranslate] logoDot listening class add', e); }
     if (liveBadge) { liveBadge.textContent = i18nT('badge_live'); liveBadge.classList.add('live'); }
     const footer = document.querySelector('.footer-status'); if (footer) footer.classList.add('live');
     toggleBtn.setAttribute('aria-label', 'Stop recording');
@@ -3731,7 +3731,7 @@ function updateUIForListening(active) {
     if (playIcon) playIcon.style.display = 'block';
     if (stopIcon) stopIcon.style.display = 'none';
     btnText.innerText = i18nT('start_live');
-    try { if (logoDot) logoDot.classList.remove('listening'); } catch {}
+    try { if (logoDot) logoDot.classList.remove('listening'); } catch (e) { console.error('[LiveTranslate] logoDot listening class remove', e); }
     if (liveBadge) { liveBadge.textContent = i18nT('badge_idle'); liveBadge.classList.remove('live'); }
     const footer = document.querySelector('.footer-status'); if (footer) footer.classList.remove('live');
     toggleBtn.setAttribute('aria-label', 'Start recording');
@@ -3760,7 +3760,7 @@ async function clearContent() {
     liveViDebounce = null;
   }
   if (liveViController) {
-    try { liveViController.abort(); } catch {}
+    try { liveViController.abort(); } catch { /* expected: defensive: abort() does not throw */ }
     liveViController = null;
   }
   abortAllPendingTranslations();
@@ -3779,7 +3779,7 @@ async function clearContent() {
   compressedSummary = "";
   lastCompressedIdx = 0;
   syncState();
-  try { await chrome.storage.local.set({ compressedSummary: "", lastCompressedIdx: 0 }); } catch {}
+  try { await chrome.storage.local.set({ compressedSummary: "", lastCompressedIdx: 0 }); } catch { /* expected: chrome.storage reset */ }
   updateCompressToggleUI();
   updateWordCounts();
   updateDock();
@@ -3832,7 +3832,7 @@ function switchTopTab(name) {
     try {
       const footer = document.querySelector('.app-footer');
       if (footer) footer.style.display = name === 'context' ? 'none' : '';
-    } catch {}
+    } catch { /* expected: view switch DOM guard */ }
   } catch (e) { console.warn('[switchTopTab]', e); }
 }
 
@@ -4060,7 +4060,7 @@ async function generateSummary() {
     copySummaryBtn.style.display = 'flex';
     const dlBtn = document.getElementById('downloadSummaryBtn');
     if (dlBtn) dlBtn.style.display = 'flex';
-    try { enhanceSummaryChecklist(); } catch {}
+    try { enhanceSummaryChecklist(); } catch (e) { console.error('[LiveTranslate] enhanceSummaryChecklist', e); }
     showStatus('Summary generated successfully');
     showToast(`Summarized with ${model} successfully`, 'success');
   } catch (error) {
@@ -4183,7 +4183,7 @@ let lastStatusMsg = 'Ready';
 /** @param {string} msg — raw message saved for i18n re-render, displayed translated */
 function showStatus(msg) {
   if (!statusText) return;
-  try { lastStatusMsg = msg; } catch {}
+  try { lastStatusMsg = msg; } catch { /* expected: defensive: plain assignment */ }
   const out = tt(msg);
   // statusText contains dot + span, preserve structure if exists
   const span = statusText.querySelector('span:last-child');
@@ -4477,7 +4477,7 @@ function speakTextPorted(text, lang = 'en-US') {
     u.lang = lang;
     u.rate = 1.0;
     window.speechSynthesis.speak(u);
-  } catch {}
+  } catch (e) { console.error('[LiveTranslate] speechSynthesis cancel', e); }
 }
 
 /** Turn "- [ ] task" / "- [x] task" markdown into interactive checklist */
@@ -4541,7 +4541,7 @@ function updateMemoryMeter() {
     pct.textContent = p + '%';
     const qCount = Object.keys(questionSuggestions || {}).length;
     meta.textContent = i18nT('mem_meta', { used: used.toLocaleString(), budget: budget.toLocaleString(), n: (finalizedEnPhrases || []).length, q: qCount });
-  } catch {}
+  } catch { /* expected: memory meter DOM query guard */ }
 }
 
 function initPortedFeatures() {
@@ -4554,11 +4554,11 @@ function initPortedFeatures() {
       root.setAttribute('data-theme', t);
       if (lightBtn) lightBtn.classList.toggle('active', t === 'light');
       if (darkBtn) darkBtn.classList.toggle('active', t === 'dark');
-      try { localStorage.setItem('app_theme', t); } catch {}
-      try { if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.set({ app_theme: t }); } catch {}
+      try { localStorage.setItem('app_theme', t); } catch { /* expected: localStorage write */ }
+      try { if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.set({ app_theme: t }); } catch { /* expected: chrome.storage write */ }
     };
     let saved = null;
-    try { saved = localStorage.getItem('app_theme'); } catch {}
+    try { saved = localStorage.getItem('app_theme'); } catch { /* expected: localStorage read */ }
     applyTheme(saved === 'dark' ? 'dark' : 'light');
     if (window.chrome && chrome.storage && chrome.storage.local) {
       chrome.storage.local.get(['app_theme'], (r) => {
@@ -4567,7 +4567,7 @@ function initPortedFeatures() {
     }
     if (lightBtn) lightBtn.addEventListener('click', () => applyTheme('light'));
     if (darkBtn) darkBtn.addEventListener('click', () => applyTheme('dark'));
-  } catch {}
+  } catch { /* expected: theme persistence read */ }
 
   // ---- Help overlay ----
   try {
@@ -4584,7 +4584,7 @@ function initPortedFeatures() {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && overlay && overlay.style.display === 'flex') closeHelp();
     });
-  } catch {}
+  } catch { /* expected: help overlay DOM guard */ }
 
   // ---- Header audio segmented (mockup) <-> legacy select ----
   try {
@@ -4598,7 +4598,7 @@ function initPortedFeatures() {
     const setSource = (v) => {
       if (sel) sel.value = v;
       paint(v);
-      try { if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.set({ audioSource: v }); } catch {}
+      try { if (window.chrome && chrome.storage && chrome.storage.local) chrome.storage.local.set({ audioSource: v }); } catch { /* expected: chrome.storage write */ }
     };
     if (tabBtn) tabBtn.addEventListener('click', () => setSource('tab'));
     if (micBtn) micBtn.addEventListener('click', () => setSource('mic'));
@@ -4606,7 +4606,7 @@ function initPortedFeatures() {
       paint(sel.value || 'tab');
       sel.addEventListener('change', () => paint(sel.value));
     }
-  } catch {}
+  } catch { /* expected: chrome.storage write */ }
 
   // ---- Transcript search / filter / submode / count / wave ----
   try {
@@ -4646,20 +4646,20 @@ function initPortedFeatures() {
         if (countEl) countEl.textContent = i18nT('count_speech', { n: (finalizedEnPhrases || []).length });
         applySearch();
         updateMemoryMeter();
-      } catch {}
+      } catch (e) { console.error('[LiveTranslate] transcript count label update', e); }
     };
     // wave follows listening state (poll cheap)
     setInterval(() => {
-      try { if (wave) wave.hidden = !isListening; } catch {}
+      try { if (wave) wave.hidden = !isListening; } catch (e) { console.error('[LiveTranslate] wave visibility update', e); }
     }, 800);
     const origAppend = appendUtterance;
     // wrap via event: MutationObserver on feed to refresh count
     const feed = document.getElementById('transcriptFeed');
     if (feed && window.MutationObserver) {
-      const mo = new MutationObserver(() => { try { window.__refreshTranscriptMeta(); } catch {} });
+      const mo = new MutationObserver(() => { try { window.__refreshTranscriptMeta(); } catch (e) { console.error('[LiveTranslate] refreshTranscriptMeta (observer)', e); } });
       mo.observe(feed, { childList: true });
     }
-  } catch {}
+  } catch (e) { console.error('[LiveTranslate] refreshTranscriptMeta (initial)', e); }
 
   // ---- Context presets + copy full ----
   try {
@@ -4673,7 +4673,7 @@ function initPortedFeatures() {
           inp.dispatchEvent(new Event('change', { bubbles: true }));
         }
         suggestContextPrompt = p;
-        try { syncState(); } catch {}
+        try { syncState(); } catch (e) { console.error('[LiveTranslate] syncState (audio source change)', e); }
         showToast('Đã áp dụng mẫu ngữ cảnh', 'success');
       });
     });
@@ -4686,8 +4686,8 @@ function initPortedFeatures() {
         showToast('Đã sao chép full context', 'success');
       } catch { showToast('Copy failed', 'error'); }
     });
-    setInterval(() => { try { updateMemoryMeter(); } catch {} }, 3000);
-  } catch {}
+    setInterval(() => { try { updateMemoryMeter(); } catch (e) { console.error('[LiveTranslate] updateMemoryMeter (periodic)', e); } }, 3000);
+  } catch { /* expected: periodic meter bootstrap guard */ }
 
   // ---- Summary download ----
   try {
@@ -4708,10 +4708,10 @@ function initPortedFeatures() {
         showToast('Downloaded .md', 'success');
       } catch { showToast('Download failed', 'error'); }
     });
-  } catch {}
+  } catch (e) { console.error('[LiveTranslate] summary download handler', e); }
 }
 
 try {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', initPortedFeatures);
   else initPortedFeatures();
-} catch {}
+} catch (e) { console.error('[LiveTranslate] initPortedFeatures bootstrap', e); }
