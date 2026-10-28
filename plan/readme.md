@@ -34,6 +34,37 @@
 - **`checkMicPermission` fallback luôn return false** (1138): cần getUserMedia probe thật — kèm permission page flow hiện tại, follow-up.
 - **`isCapturableTab` triplicate**: bản canonical ở `src/background/isCapturableTab.js` (có test) — runtime copy trong background.js/sidepanel.js chưa import được do extension không bundle; cần thêm build step cho SW — follow-up.
 
+## Round 2 (2026-10-29) — enterprise upgrade đợt 2
+
+### Findings (deep review)
+
+| # | Severity | Vị trí | Vấn đề | Fix |
+|---|----------|--------|--------|-----|
+| R2-1 | MAJOR | src/services/llm/provider.js, src/services/translate/providers.js | Canonical modules vẫn dùng `baseUrl.includes('localhost')` — Round 1 chỉ fix bản copy trong sidepanel.js (#9). Canonical là bản sẽ được bundle dùng chung → phải nâng lên hostname check trước khi dedupe | `src/utils/isLocalHostUrl.js` dùng chung |
+| R2-2 | MAJOR | sidepanel.js vs src/services | Drift còn lại: canonical MyMemory không nhận `timeoutMs` theo CONFIG; sidepanel thiếu `responseStatus` strict check; LLM suggest sidepanel không forward `signal` | Gom về canonical, chọn semantics chặt hơn mỗi case |
+| R2-3 | MAJOR | background.js (root) | Copy tay `isCapturableTab` thứ 2 (canonical có test nhưng không runtime-import được vì không có build step cho SW) | Vite build module SW từ `src/background/worker.js` |
+| R2-4 | MAJOR | tests/portedFeatures.test.js | `computeMemoryMeta` test còn ngưỡng budget 6000 cũ (3600→warn) trong khi MEMORY_BUDGET đã 30000 → fail pre-existing | Test theo % tỉ lệ với budget 30000 |
+| R2-5 | MINOR | sidepanel.css + live-new.css | Thiếu focus-visible ring thống nhất, `prefers-reduced-motion`, theme default không tôn trọng `prefers-color-scheme` | Tokens + a11y layer additive |
+| R2-6 | MINOR | manifest | Không có options page, không có commands; popup KHÔNG thêm được — action click phải giữ gesture cho tabCapture (activeTab) | Options page riêng + commands |
+| R2-7 | MINOR | UX | Transcript mất khi đóng side panel (không persist session) | Session auto-save/restore |
+
+### Plan Round 2
+
+1. **Dedupe follow-up**: `src/utils/isLocalHostUrl.js` shared util; canonical llm/translate providers dùng nó; sidepanel gọi qua shared bundle.
+2. **Build pipeline follow-up**: Vite multi-entry — `dist/shared.js` (IIFE global `LiveTranslateShared` cho sidepanel.js classic script) + `dist/background.js` (module SW import canonical isCapturableTab) + `dist/main.js`. Manifest trỏ SW vào dist. `npm run build` là bắt buộc trước khi load extension.
+3. **Features**: (a) History archive + search + export (.txt/.json), (b) session auto-save/restore qua sidepanel reopen, (c) global shortcut qua `chrome.commands` (Alt+Shift+L) + per-site disable list, (d) options page dùng chung design system.
+4. **UI/UX**: focus-visible thống nhất, prefers-reduced-motion, prefers-color-scheme default, polish options/history.
+5. Verify: vitest + build; self-review diff.
+
+## Round 2 — Trạng thái
+
+- [x] Plan
+- [x] R2-1..R2-3 dedupe + build pipeline (shared bundle + module SW)
+- [x] R2-4 fix test memoryMeter (pre-existing fail giờ xanh)
+- [x] R2-5 UI/a11y polish
+- [x] R2-6/R2-7 features: history+export, session restore, commands shortcut, per-site disable, options page
+- [x] Commit + self-review
+
 ## Trạng thái
 
 - [x] Plan
