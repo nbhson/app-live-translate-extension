@@ -22,11 +22,17 @@ describe('ported React features (mirror of sidepanel.js)', () => {
     ]);
   });
 
-  it('computeMemoryMeta thresholds', () => {
+  it('computeMemoryMeta thresholds (budget 30000 — % based)', () => {
     expect(computeMemoryMeta({ used: 0 }).pct).toBe(0);
-    expect(computeMemoryMeta({ used: 3600 }).level).toBe('warn');
-    expect(computeMemoryMeta({ used: 5400 }).level).toBe('danger');
-    const m = computeMemoryMeta({ used: 1500, utterances: 10, questions: 2 });
+    // explicit budget 6000: 1500 = 25% ok, 3600 = 60% warn, 5400 = 90% danger
+    expect(computeMemoryMeta({ used: 1500, budget: 6000 }).level).toBe('ok');
+    expect(computeMemoryMeta({ used: 3600, budget: 6000 }).level).toBe('warn');
+    expect(computeMemoryMeta({ used: 5400, budget: 6000 }).level).toBe('danger');
+    // default budget is 30000: 3600 chars = 12% -> still ok
+    expect(computeMemoryMeta({ used: 3600 }).level).toBe('ok');
+    expect(computeMemoryMeta({ used: 18000 }).level).toBe('warn');
+    expect(computeMemoryMeta({ used: 27000 }).level).toBe('danger');
+    const m = computeMemoryMeta({ used: 7500, utterances: 10, questions: 2 });
     expect(m.pct).toBe(25);
     expect(m.meta).toContain('10 câu');
   });

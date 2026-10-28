@@ -4,6 +4,7 @@
  * @module services/llm/questionDetect
  */
 import { sanitizePromptContext } from '../../utils/sanitizePromptContext.js';
+import { isLocalHostUrl } from '../../utils/isLocalHostUrl.js';
 import { isQuestion } from '../../utils/isQuestion.js';
 
 export function buildDetectPrompt(text) {
@@ -124,7 +125,7 @@ export async function detectQuestionsViaAI(text, providerConfig, callGeneric) {
   const t = String(text || '').trim();
   if (!t) return [];
   if (!providerConfig || !providerConfig.baseUrl || !providerConfig.model) return [];
-  const isLocal = String(providerConfig.baseUrl).includes('localhost') || String(providerConfig.baseUrl).includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(providerConfig.baseUrl);
   if (!providerConfig.apiKey && !isLocal) return [];
   const { prompt, systemPrompt } = buildDetectPrompt(t);
   const raw = await callGeneric(prompt, providerConfig, { temperature: 0.2, maxTokens: 256, systemPrompt });

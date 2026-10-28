@@ -1,4 +1,5 @@
 import { CONFIG } from '../../config.js';
+import { isLocalHostUrl } from '../../utils/isLocalHostUrl.js';
 import { callProviderGeneric } from './provider.js';
 import { storageSet } from '../storage.js';
 import { createCompressionAgent } from '../../harness/agent/compression.agent.js';
@@ -18,7 +19,7 @@ export function createCompressService(store, deps) {
       if (s0.compressInProgress) return;
       if (!s0.compressEnabled && !isManual) return;
       const { providerConfig } = s0;
-      const isLocal = String(providerConfig.baseUrl).includes('localhost') || String(providerConfig.baseUrl).includes('127.0.0.1');
+      const isLocal = isLocalHostUrl(providerConfig.baseUrl);
       if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
         if (isManual) showToast('AI Provider not configured for compression', 'error');
         return;

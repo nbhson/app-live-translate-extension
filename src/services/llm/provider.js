@@ -3,7 +3,9 @@
  * @module services/llm/provider
  */
 
-function isGemini(baseUrl) { return String(baseUrl).includes('generativelanguage.googleapis.com'); }
+import { isLocalHostUrl, isGeminiHostUrl } from '../../utils/isLocalHostUrl.js';
+
+function isGemini(baseUrl) { return isGeminiHostUrl(baseUrl); }
 export { isGemini };
 
 /**
@@ -66,7 +68,7 @@ export function friendlyProviderError(status, bodyText, baseUrl) {
     if (detail) msg += `: ${detail}`;
   }
   const url = String(baseUrl || '');
-  const isLocal = url.includes('localhost') || url.includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(url);
   const isOllama = /ollama/i.test(url);
   if (Number(status) === 403 && (isLocal || isOllama)) {
     msg += ' — Ollama blocked the extension origin. Restart Ollama with OLLAMA_ORIGINS="chrome-extension://*" (e.g. OLLAMA_ORIGINS="*" ollama serve), then retry.';
@@ -129,7 +131,7 @@ export async function callProviderForSuggest(prompt, providerConfig, opts = {}) 
   const model = String(providerConfig.model || '').trim();
   const apiKey = String(providerConfig.apiKey || '').trim();
   if (!baseUrl || !model) throw new Error('Missing baseUrl/model');
-  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(baseUrl);
   if (!apiKey && !isLocal) throw new Error('Missing apiKey');
   if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('Empty prompt');
   // Reduced from 30s to 20s for faster failure; retry still covers transient 429/5xx (max ~40s total)

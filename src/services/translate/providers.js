@@ -4,6 +4,8 @@
  * @module services/translate/providers
  */
 
+import { isLocalHostUrl } from '../../utils/isLocalHostUrl.js';
+
 export const MYMEMORY_ENDPOINT = 'https://api.mymemory.translated.net/get';
 export const LINGVA_ENDPOINTS = Object.freeze([
   'https://lingva.ml/api/v1/en/vi',
@@ -131,8 +133,7 @@ export function isValidAiProviderConfig(cfg) {
   const base = String(cfg.baseUrl || '').trim();
   const model = String(cfg.model || '').trim();
   if (!/^https?:\/\/.+/.test(base) || !model) return false;
-  const isLocal = base.includes('localhost') || base.includes('127.0.0.1');
-  if (!cfg.apiKey && !isLocal) return false;
+  if (!cfg.apiKey && !isLocalHostUrl(base)) return false;
   return true;
 }
 
