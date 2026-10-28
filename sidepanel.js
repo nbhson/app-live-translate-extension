@@ -116,6 +116,7 @@ let recognition = State.recognition;
 let isListening = State.isListening;
 let lastFinalIndex = State.lastFinalIndex;
 let activeAudioTrack = State.activeAudioTrack;
+let sttRestartCount = 0; // consecutive auto-restarts (reset on success)
 let finalizedOffset = State.finalizedOffset;
 let silenceTimer = State.silenceTimer;
 let finalizedEnPhrases = State.finalizedEnPhrases;
@@ -144,6 +145,7 @@ let speakerVadState = State.speakerVadState;
 let speakerVadSilenceMs = State.speakerVadSilenceMs;
 let speakerVadLastSwitchAt = State.speakerVadLastSwitchAt;
 let speakerMonitor = State.speakerMonitor;
+let speakerMonitorSource = null; // keeps the source node for disconnect on teardown
 let suggestContextPrompt = State.suggestContextPrompt;
 let contextPromptSaveTimer = State.contextPromptSaveTimer;
 let isSuggestRunning = false;
@@ -754,6 +756,22 @@ function openaiThinkingOffParamsSide() {
   };
 }
 /** Actionable error for non-OK provider responses (mirror of src friendlyProviderError). 403 from local/Ollama = blocked extension origin. */
+/**
+ * Hostname-based local check — `includes('localhost')` trước đây khớp cả
+ * `https://evil.com/?x=localhost` (bỏ qua API key requirement + misroute hint).
+ * @param {string} u
+ * @returns {boolean}
+ */
+function isLocalHostUrl(u) {
+  try {
+    const h = new URL(String(u)).hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
+  } catch { return false; }
+}
+function isGeminiHostUrl(u) {
+  try { return new URL(String(u)).hostname === 'generativelanguage.googleapis.com'; }
+  catch { return false; }
+}
 function friendlyProviderErrorSide(status, bodyText, baseUrl) {
   let msg = `HTTP ${status}`;
   const t = String(bodyText == null ? '' : bodyText).slice(0, 500);
@@ -774,7 +792,7 @@ function friendlyProviderErrorSide(status, bodyText, baseUrl) {
     if (detail) msg += ': ' + detail;
   }
   const url = String(baseUrl || '');
-  const isLocalSide = url.includes('localhost') || url.includes('127.0.0.1');
+  const isLocalSide = isLocalHostUrl(url);
   if (Number(status) === 403 && (isLocalSide || /ollama/i.test(url))) {
     msg += ' — Ollama blocked the extension origin. Restart Ollama with OLLAMA_ORIGINS="chrome-extension://*" (e.g. OLLAMA_ORIGINS="*" ollama serve), then retry.';
   }
@@ -875,7 +893,9 @@ function setupContextPrompt() {
     toggle.addEventListener('click', () => {
       const nowCollapsed = wrap.classList.contains('collapsed');
       setCollapsed(!nowCollapsed);
-      if (!nowCollapsed === false) onIdle(()=> inp.focus());
+      // Panel đang được EXPAND (trước đây collapsed) → focus input.
+      // (`!nowCollapsed === false` cũ là cùng giá trị boolean nhưng dễ đọc nhầm.)
+      if (nowCollapsed) onIdle(()=> inp.focus());
     });
     // if user starts typing and wrap is collapsed, auto expand
     inp.addEventListener('focus', () => { if (wrap.classList.contains('collapsed')) setCollapsed(false); });
@@ -1271,6 +1291,9 @@ function setupSpeakerMonitor(stream) {
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.35;
     source.connect(analyser);
+    // Giữ source node trong monitor — teardown PHẢI disconnect (node leak
+    // trên mỗi start/stop cycle trước đây).
+    speakerMonitorSource = source;
     const dataFreq = new Uint8Array(analyser.frequencyBinCount);
     const dataTime = new Uint8Array(analyser.fftSize);
     speakerMonitor = { ctx, analyser, dataFreq, dataTime, stream, timer: null, lastRms: 0, lastCentroid: 0, speechStartAt: 0, tickCount: 0, _visHandler: null };
@@ -1316,10 +1339,12 @@ function setupSpeakerMonitor(stream) {
     syncState();
   } catch (e) { console.warn('[setupSpeakerMonitor]', e); }
 }
-/** Teardown monitor — idempotent, clears interval, suspends context */
+/** Teardown monitor — idempotent, clears interval, disconnects source node, suspends context */
 function teardownSpeakerMonitor() {
   if (speakerMonitor && speakerMonitor.timer) { clearInterval(speakerMonitor.timer); speakerMonitor.timer = null; }
   if (speakerMonitor && speakerMonitor._visHandler && typeof document!=='undefined') try{ document.removeEventListener('visibilitychange', speakerMonitor._visHandler);}catch { /* expected: cleanup: removeEventListener */ }
+  // Disconnect source node — trước đây chỉ suspend ctx, node leak mỗi start/stop.
+  if (speakerMonitorSource) { try { speakerMonitorSource.disconnect(); } catch { /* expected: cleanup: disconnect */ } speakerMonitorSource = null; }
   if (speakerMonitor && speakerMonitor.ctx && speakerMonitor.ctx.state === 'running') { try { void speakerMonitor.ctx.suspend(); } catch { /* expected: cleanup: suspend AudioContext */ } }
   speakerMonitor = null; speakerVadState = 'silence'; speakerVadSilenceMs = 0; syncState();
 }
@@ -1465,7 +1490,9 @@ function parseRecognitionEvent(event) {
 function handleRecognitionResult(event) {
   if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; syncState(); }
   const { interimEn, finals } = parseRecognitionEvent(event);
-  for (const f of finals) void finalizeText(f).catch(e => console.error('[finalizeText]', e));
+  // Chain TUẦN TỰ: finalizeText await translation rồi mutate shared arrays/DOM
+  // index — chạy concurrent trước đây làm duplicate/misplace utterances.
+  finals.reduce((p, f) => p.then(() => finalizeText(f).catch(e => console.error('[finalizeText]', e))), Promise.resolve());
   if (!interimEn) return;
   hidePlaceholders();
   const liveCache = ensureLiveUtterance();
@@ -1492,9 +1519,18 @@ function handleRecognitionEnd() {
       lastFinalIndex = -1; finalizedOffset = 0; syncState();
       const rec = recognition;
       if (!rec) throw new Error('no rec');
+      // Exponential backoff (cap 5s, max 10 lần liên tiếp) — fixed 300ms trước
+      // đây tạo tight restart/error loop khi STT fail liên tục.
+      sttRestartCount += 1;
+      if (sttRestartCount > 10) {
+        showToast('Speech recognition keeps failing — stopped', 'error');
+        stopListening();
+        return;
+      }
+      const delay = Math.min(300 * Math.pow(1.6, sttRestartCount - 1), 4000);
       setTimeout(() => {
-        try { if (activeAudioTrack) rec.start(activeAudioTrack); else rec.start(); } catch (e) { console.error('[auto-restart]', e); showToast('Auto-restart failed', 'error'); stopListening(); }
-      }, 300);
+        try { if (activeAudioTrack) rec.start(activeAudioTrack); else rec.start(); sttRestartCount = 0; } catch (e) { console.error('[auto-restart]', e); showToast('Auto-restart failed', 'error'); stopListening(); }
+      }, delay);
     } catch (e) { console.error('[auto-restart]', e); showToast('Auto-restart failed', 'error'); }
   } else updateUIForListening(false);
 }
@@ -1581,7 +1617,6 @@ function isQuestion(text) {
   if (t.endsWith('!')) {
     if (/^what\s+a(n)?\b/i.test(t)) return false;
     if (/^how\s+(wonderful|nice|great|beautiful|amazing|lovely|good|bad|terrible).*!\s*$/i.test(t)) return false;
-    if (/^what\s+a\b/.test(t)) return false;
   }
   // Fast-speech comma-concat: "How are you, Today I will..."
   const commaIdx = t.indexOf(',');
@@ -1612,13 +1647,9 @@ function isQuestion(text) {
 
   if (RE_WH_ABOUT.test(t) && wc >= 2 && !t.endsWith('!')) return true;
   if (RE_CASUAL_Q.test(t) && wc >= 2) return true;
-  if (RE_IMPERATIVE_DO.test(t) && !RE_TAG_Q.test(t) && !RE_TRAILING_OR.test(t) && !t.includes('?')) {
-    if (/^(do|does|did)\b/i.test(t)) {
-      if (!/\b(you|we|they|he|she|it|there)\b/i.test(t.split(/\s+/).slice(0,4).join(' '))) {
-        // imperative declarative, skip WH/AUX fast path, let later strict aux handle
-      } else {}
-    }
-  } else if (RE_WH_START.test(t)) {
+  // RE_IMPERATIVE_DO branch trước đây chỉ chứa if/else RỖNG (dead code) —
+  // fall-through vốn không đổi kết quả, bỏ hẳn.
+  if (RE_WH_START.test(t)) {
     if (RE_WH_SUBORDINATE.test(t)) {
       // subordinate noun clause, not a standalone question
     } else if (wc >= 2 && !t.endsWith('!')) return true;
@@ -1712,7 +1743,7 @@ function validateAiQuestionsSide(original, questions){
 async function detectQuestionsViaAiSide(text){
   const t=String(text||'').trim(); if(!t) return [];
   if(!providerConfig||!providerConfig.baseUrl||!providerConfig.model) return [];
-  const isLocal=String(providerConfig.baseUrl).includes('localhost')||String(providerConfig.baseUrl).includes('127.0.0.1');
+  const isLocal=isLocalHostUrl(providerConfig.baseUrl);
   if(!providerConfig.apiKey&&!isLocal) return [];
   const key=_aiCacheKey(t); if(AI_DETECT_CACHE.has(key)) return []; // already tried
   AI_DETECT_CACHE.add(key); if(AI_DETECT_CACHE.size>200){ const first=AI_DETECT_CACHE.values().next().value; AI_DETECT_CACHE.delete(first); }
@@ -1905,8 +1936,8 @@ async function callProviderForSuggest(prompt, opts) {
   const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
   const model = providerConfig.model;
   const apiKey = providerConfig.apiKey;
-  const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
-  const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  const isLocal = isLocalHostUrl(baseUrl);
+  const isGemini = isGeminiHostUrl(baseUrl);
   const isOllama = /ollama/i.test(baseUrl) || /ollama/i.test(model);
   function geminiEmptyReasonSide(data) {
     const cand = data && data.candidates && data.candidates[0];
@@ -1931,7 +1962,9 @@ async function callProviderForSuggest(prompt, opts) {
   const geminiThinkOff = thinkingOn ? {} : geminiThinkingOffConfigSide();
   const openaiThinkOff = thinkingOn ? {} : openaiThinkingOffParamsSide();
   function geminiJsonConfig(max) { return { temperature: 0.8, maxOutputTokens: max, responseMimeType: 'application/json', ...geminiThinkOff }; }
-  let curMax = isGemini ? (opts.quality === 'fast' ? 512 : 1024) : isOllama ? (opts.quality === 'fast' ? 384 : 700) : (opts.quality === 'fast' ? 512 : 1024);
+  // Gemini và OpenAI-compatible dùng cùng cặp 512/1024 — ternary 3 nhánh
+  // trước đây (2 nhánh giống hệt nhau) gộp lại.
+  let curMax = isOllama ? (opts.quality === 'fast' ? 384 : 700) : (opts.quality === 'fast' ? 512 : 1024);
   let curPrompt = prompt;
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
@@ -1939,7 +1972,10 @@ async function callProviderForSuggest(prompt, opts) {
     if (opts.onChunk && !isLocal) {
       try {
         const streamUrl = `${baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}&alt=sse`;
-        const sRes = await fetch(streamUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) }) });
+        // fetchWithRetrySidepanel (timeout 20s, 0 retry) — bare fetch trước đây
+        // không timeout: SSE stall treo State.suggestInFlight vĩnh viễn, chặn
+        // mọi retry cho hash đó.
+        const sRes = await fetchWithRetrySidepanel(streamUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) }) }, 20000, 0);
         if (sRes.ok && sRes.body && sRes.body.getReader) {
           const reader = sRes.body.getReader(); const dec = new TextDecoder(); let acc=''; let buf='';
           while (true) { const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const ch=j.candidates?.[0]?.content?.parts?.[0]?.text||''; if(ch){acc+=ch; try{opts.onChunk(acc);}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }}}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }} }
@@ -1974,7 +2010,9 @@ async function callProviderForSuggest(prompt, opts) {
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
     if (opts.onChunk && !isLocal && !isOllama) {
       try {
-        const sRes = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' }, ...openaiThinkOff }) });
+        // Timeout cho stream fast-path (khác với bare fetch trước đây — stalled
+        // SSE để suggestInFlight pending vĩnh viễn).
+        const sRes = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' }, ...openaiThinkOff }) }, 20000, 0);
         if (sRes.ok && sRes.body && sRes.body.getReader) {
           const reader=sRes.body.getReader(); const dec=new TextDecoder(); let acc=''; let buf='';
           while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const d=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||''; if(d){acc+=d; try{opts.onChunk(acc);}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }}}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }} }
@@ -2011,7 +2049,7 @@ async function callProviderGeneric(prompt, opts = {}) {
   const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
   const model = providerConfig.model;
   const apiKey = providerConfig.apiKey;
-  const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  const isGemini = isGeminiHostUrl(baseUrl);
   const temperature = opts.temperature ?? 0.4;
   const maxTokens = opts.maxTokens ?? 512;
   const systemPrompt = opts.systemPrompt || '';
@@ -2059,7 +2097,7 @@ async function callProviderGeneric(prompt, opts = {}) {
 async function performCompression(isManual = false) {
   if (compressInProgress) return;
   if (!compressEnabled && !isManual) return;
-  const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(providerConfig.baseUrl);
   if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
     if (isManual) showToast('AI Provider not configured for compression', 'error');
     return;
@@ -2225,9 +2263,23 @@ function makeQuickReplies(answers, structures) {
 }
 
 function hashForSuggestSide(q, tail) { const n = String(q||'').trim().toLowerCase().replace(/\s+/g,' ').slice(0,160); const t = String(tail||'').slice(-300).toLowerCase(); return n+'|'+t; }
+
+/**
+ * Slot hiện tại của câu hỏi sau khi map có thể đã re-index (splitUtteranceAt
+ * /compactTranscriptMemory chạy giữa chừng LLM call) — ghi theo idx stale
+ * trước đây làm suggestion dính nhầm utterance hoặc "resurrect" slot đã drop.
+ * @returns {number}
+ */
+function suggestionSlotFor(idx, question) {
+  const cur = questionSuggestions[idx];
+  if (cur && cur.question === question) return idx;
+  const found = Object.keys(questionSuggestions).findIndex((k) => questionSuggestions[k] && questionSuggestions[k].question === question);
+  return found >= 0 ? Number(found) : idx;
+}
+
 async function triggerSuggestForIndex(idx, question) {
   if (!suggestEnabled) return;
-  const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(providerConfig.baseUrl);
   if (!providerConfig.baseUrl || !providerConfig.model || (!providerConfig.apiKey && !isLocal)) {
     questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'error', question, answers: [], structures: [], error: 'AI Provider not configured' };
     updateSuggestCard(idx);
@@ -2244,12 +2296,16 @@ async function triggerSuggestForIndex(idx, question) {
   if (cached && Date.now() - cached.ts < 10*60*1000) {
     questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'done', question, answers: cached.data.answers.slice(), structures: cached.data.structures.slice() };
     selectedQuestionIdx = idx; updateSuggestCard(idx); updateDock(); return;
+  } else if (cached) {
+    // Entry hết hạn: xóa luôn — trước đây chỉ bị bỏ qua, chiếm slot trong
+    // budget 80 đến khi map đầy (LRU không đuổi expired entry).
+    State.suggestCache.delete(hash);
   }
   const inflight = State.suggestInFlight.get(hash);
   if (inflight) {
     questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'loading', question, answers: [], structures: [] };
     selectedQuestionIdx = idx; updateSuggestCard(idx); updateDock();
-    try { const r = await inflight; questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'done', question, answers: r.answers.slice(), structures: r.structures.slice() }; } catch(e){ questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'error', question, answers: [], structures: [], error: e.message||'AI error'}; }
+    try { const r = await inflight; const wIdx = suggestionSlotFor(idx, question); questionSuggestions[wIdx] = { ...(questionSuggestions[wIdx] && questionSuggestions[wIdx].answered ? { answered: true } : {}), state: 'done', question, answers: r.answers.slice(), structures: r.structures.slice() }; } catch(e){ const wIdx = suggestionSlotFor(idx, question); questionSuggestions[wIdx] = { ...(questionSuggestions[wIdx] && questionSuggestions[wIdx].answered ? { answered: true } : {}), state: 'error', question, answers: [], structures: [], error: e.message||'AI error'}; }
     updateSuggestCard(idx); updateDock(); autoScroll(true); return;
   }
   // parallel: display loading immediately, then fetch concurrently (no serial queue)
@@ -2272,15 +2328,20 @@ async function triggerSuggestForIndex(idx, question) {
             // show partial instantly
             const partial = { state: 'done', question, answers: p.answers.slice(0,3), structures: p.structures.slice(0,3) };
             if (partial.answers.length || partial.structures.length) {
-              if (questionSuggestions[idx] && questionSuggestions[idx].answered) partial.answered = true;
-              questionSuggestions[idx] = partial;
-              updateSuggestCard(idx); updateDock();
+              // Re-key slot tại thời điểm ghi — map có thể đã re-index giữa chừng.
+              const wIdx = suggestionSlotFor(idx, question);
+              if (questionSuggestions[wIdx] && questionSuggestions[wIdx].answered) partial.answered = true;
+              questionSuggestions[wIdx] = partial;
+              updateSuggestCard(wIdx); updateDock();
               streamingShown = true;
             }
           }
         } catch (e) { console.error('[LiveTranslate] parseSuggestAnswers', e); }
       };
       const raw = await callProviderForSuggest(prompt, { onChunk });
+      // Map có thể đã re-index trong lúc LLM call — resolve slot MỚI trước khi
+      // ghi kết quả (trước đây ghi theo idx stale → suggestion dính nhầm slot).
+      const wIdx = suggestionSlotFor(idx, question);
       const parsed = parseSuggestAnswers(raw);
       let { structures, answers } = parsed;
       answers = answers.filter(a => !(a.trim().startsWith('{') && /"structures"|"answers"/.test(a)));
@@ -2305,13 +2366,15 @@ async function triggerSuggestForIndex(idx, question) {
       const result = { answers, structures };
       State.suggestCache.set(hash, { data: result, ts: Date.now() });
       if (State.suggestCache.size > 80) { const first = State.suggestCache.keys().next().value; State.suggestCache.delete(first); }
-      questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'done', question, answers, structures };
+      questionSuggestions[wIdx] = { ...(questionSuggestions[wIdx] && questionSuggestions[wIdx].answered ? { answered: true } : {}), state: 'done', question, answers, structures };
       return result;
     } catch (e) {
-      questionSuggestions[idx] = { ...(questionSuggestions[idx] && questionSuggestions[idx].answered ? { answered: true } : {}), state: 'error', question, answers: [], structures: [], error: e.message || 'AI error' };
+      const wIdx = suggestionSlotFor(idx, question);
+      questionSuggestions[wIdx] = { ...(questionSuggestions[wIdx] && questionSuggestions[wIdx].answered ? { answered: true } : {}), state: 'error', question, answers: [], structures: [], error: e.message || 'AI error' };
       throw e;
     } finally {
-      updateSuggestCard(idx);
+      const wIdx = suggestionSlotFor(idx, question);
+      updateSuggestCard(wIdx);
       updateDock();
       autoScroll(true);
       State.suggestInFlight.delete(hash);
@@ -3069,7 +3132,7 @@ function isValidAiProviderConfigSide(cfg) {
   if (!cfg || typeof cfg !== 'object') return false;
   const base = String(cfg.baseUrl || '').trim(); const model = String(cfg.model || '').trim();
   if (!/^https?:\/\/.+/.test(base) || !model) return false;
-  const isLocal = base.includes('localhost') || base.includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(base);
   if (!cfg.apiKey && !isLocal) return false;
   return true;
 }
@@ -3168,7 +3231,11 @@ async function translateViaGoogleSide(text, opts = {}) {
     }
     try {
       const url=`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(trimmed)}`;
-      const response=await fetch(url, { signal: hasExternalSignal? opts.signal : controller.signal });
+      // LUÔN fetch với controller.signal: khi caller truyền external signal,
+      // externalAbortHandler đã bridge external→controller — dùng opts.signal
+      // trực tiếp trước đây khiến TRANSLATE_TIMEOUT_MS KHÔNG áp dụng cho các
+      // request external-signaled (interim VI preview) → hang vô hạn.
+      const response=await fetch(url, { signal: controller.signal });
       if (!response.ok) {
         const status=response.status;
         if ((status===429 || status>=500) && attempt<retries) {
@@ -3468,8 +3535,11 @@ function buildUtteranceDom(idx, en, vi) {
   const handleCopy = async (btn) => {
     const txt = btn.dataset.text;
     if (txt && txt !== '…') {
-      await navigator.clipboard.writeText(txt);
-      showToast('Copied', 'success');
+      // try/catch: clipboard permission denied trước đây thành unhandled rejection.
+      try {
+        await navigator.clipboard.writeText(txt);
+        showToast('Copied', 'success');
+      } catch { showToast('Copy failed', 'error'); }
     }
   };
   copyEn.addEventListener('click', () => handleCopy(copyEn));
@@ -3913,7 +3983,7 @@ function setupSettingsOverlay() {
     try { new URL(baseUrl); } catch { showToast('Invalid Base URL', 'error'); return; }
     if (!model) { showToast('Please enter Model', 'error'); modelInput && modelInput.focus(); return; }
     // API key can be empty for local Ollama, but warn if empty for remote
-    const isLocal = baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1');
+    const isLocal = isLocalHostUrl(baseUrl);
     if (!key && !isLocal) { showToast('Please enter API Key (or use localhost)', 'error'); apiKeyInput.focus(); return; }
 
     const toSave = {
@@ -3926,6 +3996,28 @@ function setupSettingsOverlay() {
       geminiModel: model,
       geminiBaseUrl: baseUrl
     };
+    // Base URL tùy chỉnh ngoài host_permissions mặc định: manifest khai báo
+    // optional_host_permissions ["https://*/*"] nhưng KHÔNG BAO GIỜ request —
+    // fetch tới origin lạ trước đây fail ngầm (CORS/permission). Request ngay
+    // lúc lưu config (chỉ đúng lúc có user gesture).
+    let origin = '';
+    try { origin = new URL(baseUrl).origin + '/*'; } catch { /* validated above */ }
+    if (origin) {
+      chrome.permissions.contains({ origins: [origin] }, (has) => {
+        if (has) return saveNow(toSave, baseUrl, key, model, thinkingEnabled);
+        chrome.permissions.request({ origins: [origin] }, (granted) => {
+          if (!granted) showToast('Origin permission not granted — provider calls may fail', 'error');
+          saveNow(toSave, baseUrl, key, model, thinkingEnabled);
+        });
+      });
+    } else {
+      saveNow(toSave, baseUrl, key, model, thinkingEnabled);
+    }
+  });
+
+  /** Persist + update in-memory config (chrome.permissions.request cần callback
+   * không đồng bộ — tách hàm để tránh lồng). */
+  function saveNow(toSave, baseUrl, key, model, thinkingEnabled) {
     chrome.storage.local.set(toSave, () => {
       providerConfig.baseUrl = baseUrl;
       providerConfig.apiKey = key;
@@ -3937,7 +4029,7 @@ function setupSettingsOverlay() {
       showStatus('Provider configuration saved');
       showToast('Provider configuration saved', 'success');
     });
-  });
+  }
 
   // Close overlay if clicking outside the modal card
   settingsOverlay.addEventListener('click', (e) => {
@@ -3968,7 +4060,7 @@ async function loadGeminiConfig(){ return loadProviderConfig(); }
 
 // Update API Warning Card Visibility (provider based)
 function updateApiWarningState() {
-  const isLocal = providerConfig.baseUrl && (providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1'));
+  const isLocal = providerConfig.baseUrl && (isLocalHostUrl(providerConfig.baseUrl));
   const hasKey = !!providerConfig.apiKey || isLocal;
   const hasBase = !!providerConfig.baseUrl;
   const hasModel = !!providerConfig.model;
@@ -3997,7 +4089,7 @@ async function generateSummary() {
   const utterances = getSummaryUtterances();
   const englishText = utterances.join(' ').trim();
   if (!englishText || englishText.trim() === '' ) {
-    alert('No meeting content to summarize. Please record first.');
+    showToast('No meeting content to summarize. Please record first.','error');
     return;
   }
   // provider validation
@@ -4005,14 +4097,14 @@ async function generateSummary() {
     if (baseUrlInput) baseUrlInput.value = providerConfig.baseUrl || '';
     if (modelInput) modelInput.value = providerConfig.model || '';
     settingsOverlay.style.display = 'flex';
-    alert('Please configure Base URL and Model.');
+    showToast('Please configure Base URL and Model.','error');
     return;
   }
-  const isLocal = providerConfig.baseUrl.includes('localhost') || providerConfig.baseUrl.includes('127.0.0.1');
+  const isLocal = isLocalHostUrl(providerConfig.baseUrl);
   if (!providerConfig.apiKey && !isLocal) {
     if (apiKeyInput) apiKeyInput.value = '';
     settingsOverlay.style.display = 'flex';
-    alert('Please enter API Key.');
+    showToast('Please enter API Key.','error');
     return;
   }
 
@@ -4065,11 +4157,13 @@ async function generateSummary() {
     showToast(`Summarized with ${model} successfully`, 'success');
   } catch (error) {
     console.error('Provider error:', error);
+    // Raw error.message (endpoint details, request IDs, JSON fragments) KHÔNG
+    // đưa vào UI — detail ở console, user chỉ nhận message chung.
     summaryLoading.style.display = 'none';
     summaryPlaceholder.style.display = 'flex';
-    summaryPlaceholder.innerHTML = `<span style="color: #ef4444;">${i18nT('err_summary', { u: escapeHtml(providerConfig.baseUrl), e: escapeHtml(error.message) })}</span>`;
+    summaryPlaceholder.innerHTML = `<span style="color: #ef4444;">${i18nT('err_summary', { u: escapeHtml(providerConfig.baseUrl), e: escapeHtml('Provider request failed. See console (F12) for details.') })}</span>`;
     showStatus('Summary generation error');
-    showToast(error.message, 'error');
+    showToast('Summary generation failed', 'error');
   }
 }
 async function generateGeminiSummary(){ return generateSummary(); }
@@ -4385,18 +4479,20 @@ async function callSummaryLLMSide(promptText) {
   const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
   const model = providerConfig.model;
   const apiKey = providerConfig.apiKey;
-  const isGemini = baseUrl.includes('generativelanguage.googleapis.com');
+  const isGemini = isGeminiHostUrl(baseUrl);
   const thinkingOnSummary = isThinkingEnabledSide(providerConfig, {});
   const geminiThinkOffSummary = thinkingOnSummary ? {} : geminiThinkingOffConfigSide();
   const openaiThinkOffSummary = thinkingOnSummary ? {} : openaiThinkingOffParamsSide();
   let candidateText = '';
   if (isGemini) {
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-    const response = await fetch(url, {
+    // fetchWithRetrySidepanel (timeout 45s) — bare fetch trước đây: Summary
+    // button treo loading vĩnh viễn khi upstream stall.
+    const response = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ contents: [{ parts: [{ text: promptText }] }], ...(thinkingOnSummary ? {} : { generationConfig: { ...geminiThinkOffSummary } }) })
-    });
+    }, 45000, 1);
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
       throw friendlyProviderErrorSide(response.status, bodyText, baseUrl);
@@ -4407,7 +4503,7 @@ async function callSummaryLLMSide(promptText) {
     const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const response = await fetch(url, {
+    const response = await fetchWithRetrySidepanel(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -4419,7 +4515,7 @@ async function callSummaryLLMSide(promptText) {
         temperature: 0.7,
         ...openaiThinkOffSummary
       })
-    });
+    }, 45000, 1);
     if (!response.ok) {
       const bodyText = await response.text().catch(() => '');
       throw friendlyProviderErrorSide(response.status, bodyText, baseUrl);

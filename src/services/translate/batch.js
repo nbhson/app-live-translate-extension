@@ -32,7 +32,9 @@ export async function translateBatchConcurrent(tasks, opts = {}) {
         if (e.name === 'AbortError') { results[cur] = ''; break; }
         failed++;
         results[cur] = '[Translation failed]';
-        if (finalizedViPhrases) finalizedViPhrases[cur] = '[Translation failed]';
+        // Ghi theo utterance index `t.idx` — `cur` là slot vòng lặp worker,
+        // trước đây đánh dấu NHẦM utterance là failed.
+        if (finalizedViPhrases) finalizedViPhrases[t.idx] = '[Translation failed]';
       }
     }
   }
