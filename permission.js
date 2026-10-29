@@ -5,6 +5,20 @@ const requestArea = document.getElementById('requestArea');
 const grantedArea = document.getElementById('grantedArea');
 const iconBox = document.getElementById('iconBox');
 
+/** Inline error (no blocking alert — consistent with sidepanel toast policy) */
+function showPermissionError(msg) {
+  let el = document.getElementById('permissionError');
+  if (!el) {
+    el = document.createElement('p');
+    el.id = 'permissionError';
+    el.setAttribute('role', 'alert');
+    el.style.cssText = 'color:#f87171;font-size:13.5px;margin:-16px 0 20px';
+    if (requestArea && requestArea.parentNode) requestArea.parentNode.insertBefore(el, requestArea.nextSibling);
+    else document.querySelector('.container')?.appendChild(el);
+  }
+  el.textContent = msg;
+}
+
 if (grantBtn) grantBtn.addEventListener('click', async () => {
   grantBtn.disabled = true; grantBtn.textContent = 'Requesting...';
   try {
@@ -25,7 +39,7 @@ if (grantBtn) grantBtn.addEventListener('click', async () => {
     if (name === 'NotAllowedError') msg = 'You denied microphone permission. Please allow it in Settings > Privacy.';
     else if (name === 'NotFoundError') msg = 'Microphone not found.';
     else if (name === 'NotReadableError') msg = 'Microphone is in use by another app.';
-    alert(msg);
+    showPermissionError(msg);
     grantBtn.disabled = false; grantBtn.textContent = 'Allow Microphone Access';
   }
 });
