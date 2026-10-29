@@ -264,6 +264,12 @@ const I18N = {
     step_context_title: 'Bước 1 — Cung cấp ngữ cảnh',
     step_live_title: 'Bước 2 — Phụ đề & Trợ lý Live',
     step_summary_title: 'Bước 3 — AI Tổng kết cuộc họp',
+    history_btn_title: 'Lịch sử phiên dịch (tìm kiếm & xuất file)',
+    history_title: '🗂️ Lịch sử phiên dịch',
+    history_search_ph: 'Tìm trong lịch sử (EN/VI)…',
+    history_clear: '🗑 Xóa',
+    history_close: 'Đóng',
+    restore_btn: 'Khôi phục', restore_dismiss: 'Bỏ qua',
     ctx_title: 'Cung cấp ngữ cảnh',
     ctx_desc: 'Chọn mẫu nhanh hoặc nhập hint để AI gợi ý câu trả lời sát tình huống hơn.',
     suggest_ctx: 'Ngữ cảnh gợi ý',
@@ -379,6 +385,12 @@ const I18N = {
     step_context_title: 'Step 1 — Provide context',
     step_live_title: 'Step 2 — Live subtitles & assistant',
     step_summary_title: 'Step 3 — AI meeting summary',
+    history_btn_title: 'Translation history (search & export)',
+    history_title: '🗂️ Translation history',
+    history_search_ph: 'Search history (EN/VI)…',
+    history_clear: '🗑 Clear',
+    history_close: 'Close',
+    restore_btn: 'Restore', restore_dismiss: 'Dismiss',
     ctx_title: 'Provide context',
     ctx_desc: 'Pick a quick preset or type a hint so AI suggestions match your situation.',
     suggest_ctx: 'Suggestion Context',
@@ -936,6 +948,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       setupSettingsOverlay(); setupSummaryFeatures(); setupSuggestToggle(); setupCompressToggle(); setupSuggestionDock(); setupContextPrompt(); setupContextInspector(); setupDockResizer();
       await Promise.all([loadCompressPref(), loadContextPrompt()]);
+      // Round 2: history archive + session restore banner (idle, non-blocking)
+      setupHistoryFeature();
+      await Promise.all([loadHistoryArchive(), loadSessionsForRestore()]);
+      // Auto-save snapshot when panel is hidden/closed (best-effort, MV3-safe)
+      document.addEventListener('visibilitychange', () => { if (document.hidden) void autoSaveSession(); });
+      window.addEventListener('pagehide', () => { void autoSaveSession(); });
       updateCompressToggleUI(); updateDock(); updateContextInspector();
       performance.mark('sidepanel-ready');
       try { performance.measure('sidepanel-full', 'sidepanel-js-start', 'sidepanel-ready'); } catch { /* expected: performance.measure unavailable */ }
@@ -1392,6 +1410,8 @@ function stopListening() {
   if (silenceTimer) { clearTimeout(silenceTimer); silenceTimer = null; syncState(); }
   if (liveViDebounce) { clearTimeout(liveViDebounce); liveViDebounce = null; }
   if (liveViController) { try { liveViController.abort(); } catch { /* expected: defensive: abort() does not throw */ } liveViController = null; }
+  stopSessionSaveTimer();
+  autoSaveSession();
   abortAllPendingTranslations(); teardownSpeakerMonitor();
   if (window.micMonitorStream) { try { window.micMonitorStream.getTracks().forEach(t => { try { t.stop(); } catch { /* expected: cleanup: stop mic monitor tracks */ } }); } catch { /* expected: cleanup: stop mic monitor tracks */ } window.micMonitorStream = null; }
   cleanupTabCapture(); stopCompressTimer(); updateUIForListening(false); showStatus('Stopped');
@@ -1417,6 +1437,7 @@ function handleRecognitionStart() {
   isListening = true; syncState(); updateUIForListening(true);
   showStatus(activeAudioTrack ? 'Translating Tab audio...' : 'Listening for English (Mic)...');
   if (compressEnabled) startCompressTimer();
+  startSessionSaveTimer();
 }
 /**
  * Pure helper to extract interim/final from event — validated, deduped, low-confidence filter.
@@ -2672,6 +2693,7 @@ async function finalizeText(text) {
     showStatus('Translating...');
     const translated = await translateText(cleanText);
     finalizedViPhrases[idx] = translated || '[Translation failed]';
+    recordHistoryEntry(finalizedEnPhrases[idx] || '', finalizedViPhrases[idx]);
     if (liveCache) {
       setViText(liveCache.viText, finalizedViPhrases[idx]);
       liveCache.copyVi.dataset.text = finalizedViPhrases[idx];
@@ -2921,6 +2943,7 @@ async function translateBatchConcurrent(tasks, concurrency = CONFIG.MAX_CONCURRE
         const out = await translateText(t.text);
         const val = out || '[Translation failed]';
         results[cur] = val; finalizedViPhrases[t.idx] = val;
+        recordHistoryEntry(t.text, val);
         if (t.cache) {
           setViText(t.cache.viText, val); if (t.cache.copyVi) { t.cache.copyVi.dataset.text = val; t.cache.copyVi.disabled = val==='[Translation failed]'; }
           if (t.cache.colVi && val !== '[Translation failed]') { t.cache.colVi.classList.add('vi-just-arrived'); setTimeout(() => t.cache.colVi.classList.remove('vi-just-arrived'), 800); }
@@ -4256,8 +4279,240 @@ function updateMemoryMeter() {
     fill.classList.toggle('danger', p > 80);
     pct.textContent = p + '%';
     const qCount = Object.keys(questionSuggestions || {}).length;
-    meta.textContent = i18nT('mem_meta', { used: used.toLocaleString(), budget: budget.toLocaleString(), n: (finalizedEnPhrases || []).length, q: qCount });
   } catch { /* expected: memory meter DOM query guard */ }
+}
+
+// ============================================================================
+// Round 2 features — History archive (search + export) & session auto-save
+// Pure logic lives in src/services/history.js + sessions.js via Shared bundle.
+// ============================================================================
+
+const HISTORY_STORAGE_KEY = 'history';
+const SESSIONS_STORAGE_KEY = 'sessions';
+const HISTORY_SAVE_DEBOUNCE_MS = 2000;
+const SESSION_SAVE_INTERVAL_MS = 30000;
+const HISTORY_RENDER_LIMIT = 200;
+
+let historyEntries = [];
+let savedSessions = [];
+let historySaveTimer = null;
+let sessionSaveTimer = null;
+let historyConfirmingClear = false;
+
+/** Record a finished EN→VI pair into the archive (deduped, debounced persist). */
+function recordHistoryEntry(en, vi) {
+  try {
+    const entry = Shared.history.createHistoryEntry(en, vi === '[Translation failed]' ? '' : vi);
+    if (!entry) return;
+    // dedupe: finalizeText + batch path can land the same pair twice
+    const prev = historyEntries[0];
+    if (prev && prev.en === entry.en && prev.vi === entry.vi) return;
+    historyEntries = Shared.history.appendHistoryEntries(historyEntries, entry);
+    if (!historySaveTimer) {
+      historySaveTimer = setTimeout(() => {
+        historySaveTimer = null;
+        void storageSet({ [HISTORY_STORAGE_KEY]: historyEntries });
+      }, HISTORY_SAVE_DEBOUNCE_MS);
+    }
+  } catch (e) { console.warn('[LiveTranslate][history] record', e); }
+}
+
+async function loadHistoryArchive() {
+  try {
+    const r = await storageGet([HISTORY_STORAGE_KEY]);
+    historyEntries = Shared.history.parseHistory(r[HISTORY_STORAGE_KEY]);
+  } catch (e) { console.warn('[LiveTranslate][history] load', e); historyEntries = []; }
+}
+
+/** Trigger a browser download of text content (extension page context). */
+function downloadTextFile(filename, content, mime) {
+  try {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {
+    console.error('[LiveTranslate][history] export', e);
+    showToast('Export failed', 'error');
+  }
+}
+
+function historyExportBaseName() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `live-translate-history-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+}
+
+/** Render the history overlay list (filtered by the search box). */
+function renderHistoryList() {
+  const listEl = document.getElementById('historyList');
+  if (!listEl) return;
+  const searchEl = document.getElementById('historySearchInput');
+  const q = searchEl ? searchEl.value : '';
+  const rows = Shared.history.searchHistory(historyEntries, q);
+  const countEl = document.getElementById('historyCount');
+  if (countEl) countEl.textContent = q.trim() ? `${rows.length}/${historyEntries.length}` : String(historyEntries.length);
+  listEl.textContent = '';
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'history-empty';
+    empty.textContent = q.trim() ? 'Không có kết quả khớp.' : 'Chưa có lịch sử. Bắt đầu Live để ghi cặp EN→VI.';
+    listEl.appendChild(empty);
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const e of rows.slice(0, HISTORY_RENDER_LIMIT)) {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.setAttribute('role', 'listitem');
+    const meta = document.createElement('div');
+    meta.className = 'history-item-meta';
+    const time = document.createElement('span');
+    time.className = 'history-item-time';
+    try { time.textContent = new Date(e.ts).toLocaleString(); } catch { time.textContent = String(e.ts); }
+    meta.appendChild(time);
+    item.appendChild(meta);
+    const en = document.createElement('div');
+    en.className = 'history-item-en';
+    en.textContent = e.en || '—';
+    item.appendChild(en);
+    const vi = document.createElement('div');
+    vi.className = 'history-item-vi';
+    vi.textContent = e.vi || '—';
+    item.appendChild(vi);
+    frag.appendChild(item);
+  }
+  listEl.appendChild(frag);
+}
+
+/** History overlay setup — open/close, search, export, two-step clear. */
+function setupHistoryFeature() {
+  const overlay = document.getElementById('historyOverlay');
+  if (!overlay) return;
+  const open = () => { historyConfirmingClear = false; renderHistoryList(); overlay.style.display = 'flex'; const s = document.getElementById('historySearchInput'); if (s) { s.value = ''; s.focus(); } };
+  const close = () => { overlay.style.display = 'none'; };
+  const openBtn = document.getElementById('historyBtn');
+  if (openBtn) openBtn.addEventListener('click', open);
+  const closeBtn = document.getElementById('closeHistoryBtn');
+  if (closeBtn) closeBtn.addEventListener('click', close);
+  const closeFooterBtn = document.getElementById('closeHistoryFooterBtn');
+  if (closeFooterBtn) closeFooterBtn.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const searchEl = document.getElementById('historySearchInput');
+  if (searchEl) searchEl.addEventListener('input', renderHistoryList);
+  const txtBtn = document.getElementById('exportHistoryTxtBtn');
+  if (txtBtn) txtBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.txt', Shared.history.historyToText(historyEntries), 'text/plain;charset=utf-8'));
+  const jsonBtn = document.getElementById('exportHistoryJsonBtn');
+  if (jsonBtn) jsonBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.json', Shared.history.historyToJson(historyEntries), 'application/json;charset=utf-8'));
+  const clearHistBtn = document.getElementById('clearHistoryBtn');
+  if (clearHistBtn) clearHistBtn.addEventListener('click', async () => {
+    if (!historyConfirmingClear) {
+      historyConfirmingClear = true;
+      clearHistBtn.textContent = '🗑 Xác nhận xóa?';
+      setTimeout(() => { historyConfirmingClear = false; clearHistBtn.textContent = '🗑 Xóa'; }, 4000);
+      return;
+    }
+    historyEntries = [];
+    historyConfirmingClear = false;
+    clearHistBtn.textContent = '🗑 Xóa';
+    try { await storageSet({ [HISTORY_STORAGE_KEY]: historyEntries }); } catch (e) { console.warn('[LiveTranslate][history] clear persist', e); }
+    renderHistoryList();
+    showToast('History cleared', 'success');
+  });
+}
+
+// --- Session auto-save / restore (restore never mutates live STT state) ---
+
+function captureSessionSnapshot() {
+  try {
+    return Shared.sessions.createSessionSnapshot({
+      en: finalizedEnPhrases,
+      vi: finalizedViPhrases,
+      summary: (typeof summaryMarkdown !== 'undefined' && summaryMarkdown && summaryMarkdown.dataset.rawText) || '',
+    });
+  } catch (e) { console.warn('[LiveTranslate][session] snapshot', e); return null; }
+}
+
+async function autoSaveSession() {
+  try {
+    const snap = captureSessionSnapshot();
+    if (!snap) return;
+    savedSessions = Shared.sessions.appendSession(savedSessions, snap);
+    await storageSet({ [SESSIONS_STORAGE_KEY]: savedSessions });
+  } catch (e) { console.warn('[LiveTranslate][session] save', e); }
+}
+
+function startSessionSaveTimer() {
+  stopSessionSaveTimer();
+  sessionSaveTimer = setInterval(() => { void autoSaveSession(); }, SESSION_SAVE_INTERVAL_MS);
+}
+function stopSessionSaveTimer() {
+  if (sessionSaveTimer) { clearInterval(sessionSaveTimer); sessionSaveTimer = null; }
+}
+
+/** Render a restored (read-only) session block at the top of the transcript feed. */
+function renderRestoredSession(session) {
+  const feed = DOM.transcriptFeed;
+  if (!feed || !session || !Array.isArray(session.pairs)) return;
+  const block = document.createElement('div');
+  block.className = 'restored-session';
+  const head = document.createElement('div');
+  head.className = 'restored-session-head';
+  let tsText = '';
+  try { tsText = new Date(session.ts).toLocaleString(); } catch { tsText = String(session.ts); }
+  head.textContent = `⏪ Phiên đã lưu • ${session.pairs.length} câu • ${tsText}`;
+  block.appendChild(head);
+  for (const p of session.pairs) {
+    const row = document.createElement('div');
+    row.className = 'utterance restored';
+    const body = document.createElement('div');
+    body.className = 'utterance-body';
+    const colEn = document.createElement('div');
+    colEn.className = 'utterance-col utterance-col-en';
+    const enText = document.createElement('span');
+    enText.className = 'utterance-en-text';
+    enText.textContent = p.en || '—';
+    colEn.appendChild(enText);
+    const colVi = document.createElement('div');
+    colVi.className = 'utterance-col utterance-col-vi';
+    const viText = document.createElement('span');
+    viText.className = 'utterance-vi-text';
+    viText.textContent = p.vi || '—';
+    colVi.appendChild(viText);
+    body.appendChild(colEn); body.appendChild(colVi);
+    row.appendChild(body);
+    block.appendChild(row);
+  }
+  feed.insertBefore(block, feed.firstChild);
+  if (DOM.combinedPlaceholder) DOM.combinedPlaceholder.style.display = 'none';
+}
+
+function showRestoreBanner(session) {
+  const banner = document.getElementById('restoreBanner');
+  if (!banner) return;
+  const textEl = document.getElementById('restoreBannerText');
+  let tsText = '';
+  try { tsText = new Date(session.ts).toLocaleString(); } catch { tsText = String(session.ts); }
+  if (textEl) textEl.textContent = `Phiên trước (${session.pairs.length} câu, ${tsText}) — khôi phục vào phụ đề?`;
+  banner.style.display = 'flex';
+  const restoreBtn = document.getElementById('restoreSessionBtn');
+  const dismissBtn = document.getElementById('dismissRestoreBtn');
+  const hide = () => { banner.style.display = 'none'; };
+  if (restoreBtn) restoreBtn.addEventListener('click', () => { renderRestoredSession(session); hide(); showToast('Đã khôi phục phiên (read-only)', 'success'); }, { once: true });
+  if (dismissBtn) dismissBtn.addEventListener('click', hide, { once: true });
+}
+
+async function loadSessionsForRestore() {
+  try {
+    const r = await storageGet([SESSIONS_STORAGE_KEY]);
+    savedSessions = Shared.sessions.parseSessions(r[SESSIONS_STORAGE_KEY]);
+    const latest = savedSessions[0];
+    if (latest && latest.pairs.length) showRestoreBanner(latest);
+  } catch (e) { console.warn('[LiveTranslate][session] load', e); }
 }
 
 function initPortedFeatures() {

@@ -951,3 +951,59 @@ body { font-family: 'Plus Jakarta Sans', system-ui, -apple-system, 'Segoe UI', R
 #liveTabContent .placeholder-desc { color: var(--display-empty-sub) !important; }
 #liveTabContent .placeholder-desc strong { color: var(--display-en) !important; }
 #liveTabContent .hint-chip { color: var(--display-empty-sub) !important; }
+
+/* ============================================================
+   Round 2 — Session restore banner + History archive overlay
+   (design tokens reuse; dark mode via [data-theme="dark"])
+   ============================================================ */
+.restore-banner {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  border-radius: 10px;
+  background: rgba(52, 211, 153, 0.08);
+  color: var(--tx-primary, #e2e8f0);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.restore-banner .restore-icon { flex: none; }
+.restore-banner .restore-text { flex: 1; min-width: 0; }
+.restore-banner .restore-actions { display: flex; gap: 8px; }
+.restore-banner .btn-sm { padding: 4px 12px; font-size: 12.5px; }
+
+.history-card { max-width: 640px; width: 92%; }
+.history-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px 4px;
+}
+.history-search-wrap { flex: 1; }
+.history-count { font-size: 12px; color: var(--tx-muted, #8B94A7); min-width: 42px; text-align: right; }
+.history-list {
+  max-height: 46vh; min-height: 160px; overflow-y: auto;
+  padding: 4px 16px 12px;
+}
+.history-empty { padding: 28px 8px; text-align: center; color: var(--tx-muted, #8B94A7); font-size: 13px; }
+.history-item {
+  padding: 8px 10px; margin: 6px 0;
+  border: 1px solid var(--border-soft, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.history-item:hover { background: rgba(255, 255, 255, 0.06); }
+.history-item-meta { display: flex; justify-content: flex-end; }
+.history-item-time { font-size: 11px; color: var(--tx-muted, #8B94A7); }
+.history-item-en { font-size: 13.5px; color: var(--tx-primary, #e2e8f0); line-height: 1.45; }
+.history-item-vi { font-size: 13px; color: var(--tx-muted, #9aa4b5); margin-top: 2px; }
+.history-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.history-footer-left { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn-danger { color: #f87171; border-color: rgba(239, 68, 68, 0.35); }
+.btn-danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.12); }
+
+.restored-session { border: 1px dashed rgba(148, 163, 184, 0.4); border-radius: 12px; margin: 8px 0 14px; padding: 6px 8px 4px; opacity: 0.92; }
+.restored-session-head { font-size: 12px; color: var(--tx-muted, #8B94A7); padding: 4px 6px 8px; }
+.utterance.restored { opacity: 0.85; }
+:root[data-theme="light"] .history-item { background: rgba(15, 23, 42, 0.04); }
+:root[data-theme="light"] .restore-banner { color: #0f172a; }

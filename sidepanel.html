@@ -29,6 +29,9 @@
         <button id="themeLightBtn" class="theme-btn" data-i18n-title="theme_light_title" data-i18n-aria="theme_light_title" title="Light theme" aria-label="Light theme">☀️</button>
         <button id="themeDarkBtn" class="theme-btn active" data-i18n-title="theme_dark_title" data-i18n-aria="theme_dark_title" title="Dark theme" aria-label="Dark theme">🌙</button>
       </div>
+      <button id="historyBtn" class="btn btn-icon" data-i18n-title="history_btn_title" data-i18n-aria="history_btn_title" title="Translation history (search & export)" aria-label="Open translation history">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3a9 9 0 0 0-9 9H1l3.9 3.9.1.1 4-4H9a6 6 0 1 1 2.13 6.86l-1.42 1.45A9 9 0 1 0 13 3zm-1 5v5l4.28 2.54.72-1.21-3.78-2.27V8H12z"/></svg>
+      </button>
       <button id="helpBtn" class="btn btn-icon" data-i18n-title="help_btn_title" data-i18n-aria="help_btn_title" title="Color legend & help" aria-label="Open help">?</button>
       <button id="settingsBtn" class="btn btn-icon" data-i18n-title="ai_cfg_title" data-i18n-aria="ai_cfg_title" title="Configure AI Provider (Ctrl+,)" aria-label="Open AI Provider settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
@@ -59,6 +62,16 @@
     <button id="clearBtn" class="btn btn-ghost btn-clear" data-i18n-title="clear_title" data-i18n-aria="clear_title" title="Clear content (Ctrl+K)" aria-label="Clear all content">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4V3H9v1H4v2h16V4zM6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM8 9h2v10H8V9zm4 0h2v10h-2V9z"/></svg>
     </button>
+  </div>
+
+  <!-- Session restore banner (Round 2 — auto-saved session available) -->
+  <div class="restore-banner" id="restoreBanner" style="display:none" role="status">
+    <span class="restore-icon" aria-hidden="true">⏪</span>
+    <span class="restore-text" id="restoreBannerText"></span>
+    <span class="restore-actions">
+      <button id="restoreSessionBtn" class="btn btn-primary btn-sm" data-i18n="restore_btn">Khôi phục</button>
+      <button id="dismissRestoreBtn" class="btn btn-ghost btn-sm" data-i18n="restore_dismiss">Bỏ qua</button>
+    </span>
   </div>
 
   <!-- Global memory strip — always visible for direct tracking -->
@@ -323,6 +336,32 @@
       <span class="toggle-label" data-i18n="autoscroll">Auto-scroll</span>
     </label>
   </footer>
+
+  <!-- History Archive Overlay (Round 2 — search + export) -->
+  <div class="overlay" id="historyOverlay" style="display:none" role="dialog" aria-modal="true" aria-labelledby="history-title">
+    <div class="overlay-card settings-card history-card">
+      <div class="settings-header">
+        <h3 id="history-title" data-i18n="history_title">🗂️ Lịch sử phiên dịch</h3>
+        <button id="closeHistoryBtn" class="btn-close" title="Close (Esc)" aria-label="Close">×</button>
+      </div>
+      <div class="history-toolbar">
+        <div class="search-wrap history-search-wrap">
+          <span class="search-icon" aria-hidden="true">🔍</span>
+          <input type="text" id="historySearchInput" class="search-input" data-i18n-ph="history_search_ph" placeholder="Tìm trong lịch sử (EN/VI)…" aria-label="Search history" autocomplete="off">
+        </div>
+        <span class="history-count" id="historyCount" aria-live="polite"></span>
+      </div>
+      <div class="history-list scrollable" id="historyList" role="list" aria-label="History entries"></div>
+      <div class="settings-footer history-footer">
+        <div class="history-footer-left">
+          <button id="exportHistoryTxtBtn" class="btn btn-ghost btn-sm" title="Export as plain text">⬇ .txt</button>
+          <button id="exportHistoryJsonBtn" class="btn btn-ghost btn-sm" title="Export as JSON (re-importable)">⬇ .json</button>
+          <button id="clearHistoryBtn" class="btn btn-ghost btn-danger" data-i18n="history_clear">🗑 Xóa</button>
+        </div>
+        <button id="closeHistoryFooterBtn" class="btn btn-primary" data-i18n="history_close">Đóng</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Toast -->
   <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="true"></div>
