@@ -7,8 +7,8 @@
     "test": "vitest run --coverage",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
-    "build": "vite build",
-    "lint": "node --check sidepanel.js && node --check background.js && node --check permission.js"
+    "build": "vite build && vite build --config vite.shared.config.js && vite build --config vite.worker.config.js",
+    "lint": "node --check sidepanel.js && node --check permission.js && node --check src/background/worker.js"
   },
   "dependencies": {},
   "devDependencies": {
