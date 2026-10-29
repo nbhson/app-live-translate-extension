@@ -83,6 +83,49 @@ Independent verify + self-review trên HEAD sau khi Round 2 commit xong:
 - [x] `node --check` 3 entry files OK; vitest **204/205 pass** (1 fail pre-existing — fail cả trên HEAD sạch, đã verify bằng stash)
 - [x] Commit + self-review
 
+## Round 3 (2026-10-29) — Sidepanel ESM migration
+
+### Findings / scope
+
+- `sidepanel.js` (4.7k dòng, classic script) vẫn tiêu thụ shared bundle qua global `globalThis.LiveTranslateShared` (28 điểm gọi `Shared.*`) — dependency gián tiếp, khó tree-shake, không thấy được import graph.
+- `options.js` cũng dùng global bundle (escapeHtml/siteMatch/history/sessions).
+- `permission.js` không dùng bundle — giữ classic script.
+- Canonical `src/services/*`, `src/utils/*` đã có test đầy đủ → sidepanel import trực tiếp là an toàn, không cần adapter mới.
+
+### Plan Round 3
+
+1. `sidepanel.js` → ES module: import trực tiếp từ `src/services/*` + `src/utils/*`, bỏ toàn bộ `Shared.*` indirection (giữ tên wrapper để tối thiểu diff).
+2. `options.js` → ES module (rẻ, cùng pattern).
+3. Build mới `vite.sidepanel.config.js`: ESM entries `sidepanel.js → dist/sidepanel.js`, `options.js → dist/options.js` (tên file deterministic, chunk chung `dist/chunks/sessions.js`).
+4. `sidepanel.html` / `options.html`: `<script type="module" src="dist/*.js">` (MV3 extension pages hỗ trợ module). Bỏ `<script src="dist/shared.js">`.
+5. Giữ `dist/shared.js` + `sharedEntry.test.js`: bundle vẫn là hợp đồng export canonical (không trang nào tiêu thụ nữa nhưng test giữ 225/225 và làm guard cho export surface).
+6. `permission.js` giữ classic script (45 dòng, không phụ thuộc gì).
+
+## Round 3 — Trạng thái
+
+- [x] sidepanel.js → ESM (28 điểm `Shared.*` → import trực tiếp; tên wrapper giữ nguyên)
+- [x] options.js → ESM
+- [x] vite.sidepanel.config.js + build script 4 bundles; HTML `type="module"`
+- [x] Verify: `npm test` **225/225 pass** (29 files); `npm run build` OK (main 85KB, sidepanel 145KB + chunk sessions 3.4KB, options 3.9KB, shared 24KB, background 4.6KB); `npm run lint` OK (node --check × 4, ESM parse)
+- [x] Verify chương trình (`plan/verify-round3.cjs`): mọi script/link trong 3 HTML tồn tại; script `dist/` đều `type="module"`; toàn bộ relative import trong dist entries resolve được (dist/sidepanel.js → chunks/sessions.js); không còn consumer runtime của `LiveTranslateShared` (chỉ còn comment). ALL-PATHS-OK.
+- [x] Manifest không đổi: side_panel → sidepanel.html, options_ui → options.html, SW dist/background.js (module); CSP không đổi (script-src 'self' cho phép module script cùng origin).
+- [x] Commit (local, KHÔNG push) + self-review
+
+### Self-review log (Round 3)
+
+- Tên import trùng local `const` (isLocalHostUrl, escapeHtml, sanitizePromptContext, computeSpectralCentroid…) → xóa wrapper `const`, dùng binding import trực tiếp; `node --check` xác nhận không duplicate declaration.
+- Namespace imports đặt tên tránh collision với biến cục bộ: `historyStore` (không dùng `history` — trùng `window.history`), `sessionStore`, `siteMatch`.
+- `type="module"` = defer mặc định → tương đương `defer` cũ, DOM sẵn sàng khi script chạy; HTML không có inline handler nào phụ thuộc global của sidepanel.js (đã grep).
+- Chia chunk chung giữa 2 entry là ESM chuẩn (relative import trong dist) — đã walk import graph.
+
+### Remaining risks (Round 3)
+
+- `dist/` là build artifact (gitignored): load extension REQUIRES `npm run build` trước — giờ áp dụng cho cả sidepanel + options (trước đây chỉ sidepanel qua shared.js). Đã ghi chú trong HTML comment.
+- Shared bundle `dist/shared.js` hiện không còn trang nào tiêu thụ → có thể xóa build + `sharedEntry.test.js` ở Round 4 (sẽ giảm test count; giữ lại vì task yêu cầu 225 tests green).
+- `permission.js` vẫn classic script — không đáng ESM hóa (45 dòng, standalone).
+- Chưa smoke-test runtime trong Chrome thật (không có harness chrome trong CI) — rủi ro thấp vì chỉ đổi cơ chế nạp code, không đổi logic; logic đã qua 225 tests qua bản canonical.
+
+
 ## Review Log
 
 ### Vòng 1
