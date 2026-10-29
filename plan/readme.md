@@ -65,6 +65,17 @@
 - [x] R2-6/R2-7 features: history+export, session restore, commands shortcut, per-site disable, options page
 - [x] Commit + self-review
 
+## Round 2 — Verification pass (re-run 2026-10-29)
+
+Independent verify + self-review trên HEAD sau khi Round 2 commit xong:
+
+- `npm test`: **225/225 pass** (29 files). `npm run build`: 3 bundle OK (`dist/main.js` 85KB, `dist/shared.js` 24KB, `dist/background.js` 4.6KB). `npm run lint` (`node --check` × 3 entry) OK. Không còn test fail pre-existing (R2-4 đã fix từ đợt trước, verified xanh).
+- Manifest check: SW = `dist/background.js` (module), options page + `commands` wired, CSP `script-src 'self'; object-src 'none'; base-uri 'none'`, host_permissions không mở rộng; `dist/` gitignored (build artifact).
+- Review log (self-review bắt thêm 1 bug thật):
+  - `siteMatch.js`: `pathname.startsWith(pPath + '?')` là dead code — `URL.pathname` không bao giờ chứa query; pattern dạng `example.com/meet?id=1` vì vậy không bao giờ match. Fix: strip query trong `normalizeSitePattern`, bỏ dead condition; +1 test case.
+  - Ghi nhận (không sửa): `flashOffBadge` dùng `setTimeout` trong SW — worker có thể bị kill trước khi badge nhấp nháy xong; dùng `chrome.alarms` sẽ tốn thêm permission "alarms" → không đáng, chấp nhận badge đôi khi kèm theo (đã có console.info log).
+  - Ghi nhận: `"tabs"` permission giữ nguyên theo quyết định Round 1 (đã cân nhắc lại — cần URL active tab cho `isCapturableTab` khi mở panel).
+
 ## Trạng thái
 
 - [x] Plan
