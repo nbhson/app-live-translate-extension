@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Translate — Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main class="options-page">
+    <header class="options-header">
+      <h1>⚙️ Live Translate — Settings</h1>
+      <p class="options-sub">Cấu hình trang web, dữ liệu và giao diện. Thay đổi được lưu ngay lập tức.</p>
+    </header>
+
+    <section class="options-card" aria-labelledby="sites-title">
+      <h2 id="sites-title">🚫 Trang bị tắt (per-site)</h2>
+      <p class="options-desc">Live Translate sẽ không mở trên các trang trong danh sách. Dùng dạng <code>example.com</code> hoặc <code>docs.example.com/meetings</code>.</p>
+      <form id="addSiteForm" class="site-add-row">
+        <input type="text" id="sitePatternInput" class="form-input" placeholder="example.com" aria-label="Site pattern" autocomplete="off" spellcheck="false">
+        <button type="submit" class="btn btn-primary btn-sm">Thêm</button>
+      </form>
+      <ul id="siteList" class="site-list" aria-label="Disabled sites"></ul>
+      <p class="help-text" id="siteError" role="alert" style="display:none;color:#f87171"></p>
+    </section>
+
+    <section class="options-card" aria-labelledby="data-title">
+      <h2 id="data-title">💾 Dữ liệu</h2>
+      <div class="data-row">
+        <span id="historyStats">Lịch sử: —</span>
+        <button id="exportHistoryTxtBtn" class="btn btn-ghost btn-sm">⬇ Export .txt</button>
+        <button id="exportHistoryJsonBtn" class="btn btn-ghost btn-sm">⬇ Export .json</button>
+        <button id="clearHistoryBtn" class="btn btn-ghost btn-sm btn-danger">🗑 Xóa lịch sử</button>
+      </div>
+      <div class="data-row">
+        <span id="sessionsCount">Phiên đã lưu: —</span>
+        <button id="clearSessionsBtn" class="btn btn-ghost btn-sm">🗑 Xóa phiên đã lưu</button>
+      </div>
+    </section>
+
+    <section class="options-card" aria-labelledby="appearance-title">
+      <h2 id="appearance-title">🎨 Giao diện</h2>
+      <label class="form-row-label" for="themeDefault">Theme mặc định (khi chưa chọn ☀️/🌙)</label>
+      <select id="themeDefault" class="form-select">
+        <option value="system">🖥 Theo hệ thống</option>
+        <option value="light">☀️ Light</option>
+        <option value="dark">🌙 Dark</option>
+      </select>
+      <p class="help-text">Lựa chọn ☀️/🌙 trong side panel vẫn được ưu tiên.</p>
+    </section>
+
+    <section class="options-card options-about">
+      <h2>ℹ️ Về extension</h2>
+      <p class="help-text" id="aboutVersion"></p>
+      <p class="help-text">Phím tắt: <kbd>Alt+Shift+L</kbd> mở/tắt side panel (đổi trong <code>chrome://extensions/shortcuts</code>).</p>
+    </section>
+
+    <p class="save-status" id="saveStatus" role="status" aria-live="polite"></p>
+  </main>
+
+  <!-- Shared runtime bundle (canonical utils via globalThis.LiveTranslateShared) -->
+  <script src="dist/shared.js"></script>
+  <script src="options.js" defer></script>
+</body>
+</html>

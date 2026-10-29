@@ -951,6 +951,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Round 2: history archive + session restore banner (idle, non-blocking)
       setupHistoryFeature();
       await Promise.all([loadHistoryArchive(), loadSessionsForRestore()]);
+      void setupPerSiteBanner();
       // Auto-save snapshot when panel is hidden/closed (best-effort, MV3-safe)
       document.addEventListener('visibilitychange', () => { if (document.hidden) void autoSaveSession(); });
       window.addEventListener('pagehide', () => { void autoSaveSession(); });
@@ -4515,6 +4516,40 @@ async function loadSessionsForRestore() {
   } catch (e) { console.warn('[LiveTranslate][session] load', e); }
 }
 
+// --- Per-site enable/disable (list managed in options page; SW gates open) ---
+
+/** Show a re-enable banner when the current tab's site is disabled. */
+async function setupPerSiteBanner() {
+  const banner = document.getElementById('siteDisabledBanner');
+  if (!banner) return;
+  let tab = null;
+  try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); }
+  catch (e) { console.warn('[LiveTranslate][site] tabs.query', e); }
+  if (!tab || typeof tab.url !== 'string' || !tab.url) return;
+  let disabled = false; let patterns = [];
+  try {
+    const r = await storageGet(['disabledSites']);
+    patterns = Array.isArray(r.disabledSites) ? r.disabledSites : [];
+    disabled = Shared.siteMatch.isSiteDisabled(tab.url, patterns);
+  } catch (e) { console.warn('[LiveTranslate][site] check', e); return; }
+  if (!disabled) return;
+  let host = '';
+  try { host = new URL(tab.url).hostname; } catch { host = tab.url; }
+  const textEl = document.getElementById('siteDisabledText');
+  if (textEl) textEl.textContent = `Live Translate đang tắt trên ${host || 'trang này'}.`;
+  banner.style.display = 'flex';
+  const enableBtn = document.getElementById('enableSiteBtn');
+  if (enableBtn) enableBtn.addEventListener('click', async () => {
+    try {
+      const remaining = patterns.filter((p) => !Shared.siteMatch.isSiteDisabled(tab.url, [p]));
+      await storageSet({ disabledSites: remaining });
+      banner.style.display = 'none';
+      showToast('Đã bật lại trên trang này', 'success');
+    } catch (e) { console.error('[LiveTranslate][site] enable', e); showToast('Không lưu được — thử lại', 'error'); }
+  }, { once: true });
+}
+
+
 function initPortedFeatures() {
   // ---- Theme ----
   try {
@@ -4530,10 +4565,13 @@ function initPortedFeatures() {
     };
     let saved = null;
     try { saved = localStorage.getItem('app_theme'); } catch { /* expected: localStorage read */ }
-    applyTheme(saved === 'dark' ? 'dark' : 'light');
+    const systemTheme = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+    // Explicit user choice wins; otherwise options-page default; else system scheme
+    applyTheme(saved === 'dark' || saved === 'light' ? saved : systemTheme);
     if (window.chrome && chrome.storage && chrome.storage.local) {
-      chrome.storage.local.get(['app_theme'], (r) => {
+      chrome.storage.local.get(['app_theme', 'app_theme_default'], (r) => {
         if (r && (r.app_theme === 'light' || r.app_theme === 'dark')) applyTheme(r.app_theme);
+        else if (saved !== 'light' && saved !== 'dark' && r && (r.app_theme_default === 'light' || r.app_theme_default === 'dark')) applyTheme(r.app_theme_default);
       });
     }
     if (lightBtn) lightBtn.addEventListener('click', () => applyTheme('light'));

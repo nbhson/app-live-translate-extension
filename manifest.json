@@ -19,6 +19,13 @@
   "optional_host_permissions": ["https://*/*"],
   "background": { "service_worker": "dist/background.js", "type": "module" },
   "side_panel": { "default_path": "sidepanel.html" },
+  "options_ui": { "page": "options.html", "open_in_tab": true },
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": { "default": "Alt+Shift+L" },
+      "description": "Toggle Live Translate side panel"
+    }
+  },
   "action": {
     "default_title": "Open Live Translate",
     "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }

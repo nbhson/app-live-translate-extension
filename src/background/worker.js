@@ -7,8 +7,38 @@
  * @module background/worker
  */
 import { isCapturableTab } from './isCapturableTab.js';
+import { isSiteDisabled } from '../utils/siteMatch.js';
 
 const PANEL_BEHAVIOR = { openPanelOnActionClick: false };
+const DISABLED_SITES_KEY = 'disabledSites';
+
+/** Per-site disable list (chrome.storage.local) — checked before opening. */
+async function isSiteDisabledForTab(tab) {
+  if (!tab || typeof tab.url !== 'string' || !tab.url) return false;
+  try {
+    const r = await chrome.storage.local.get([DISABLED_SITES_KEY]);
+    const patterns = Array.isArray(r[DISABLED_SITES_KEY]) ? r.disabledSites : [];
+    return isSiteDisabled(tab.url, patterns);
+  } catch (e) {
+    console.error('[worker] disabledSites check', e);
+    return false;
+  }
+}
+
+/** Flash a short badge marker when the panel open was suppressed for this site. */
+function flashOffBadge() {
+  try {
+    chrome.action.setBadgeText({ text: 'OFF' });
+    chrome.action.setBadgeBackgroundColor({ color: '#e11d48' });
+    setTimeout(() => { try { chrome.action.setBadgeText({ text: '' }); } catch { /* worker may be gone */ } }, 2500);
+  } catch (e) { console.error('[worker] badge', e); }
+}
+
+/** Open the side panel for a window (user gesture required: click or command). */
+async function openPanelForWindow(windowId) {
+  try { await chrome.sidePanel.open({ windowId }); }
+  catch (error) { console.error('[worker] sidePanel.open', error); }
+}
 
 function setPanelBehavior() {
   chrome.sidePanel
@@ -29,8 +59,24 @@ setPanelBehavior();
 // and breaks tab audio — do NOT switch back without a host-permission flow.
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab || typeof tab.windowId !== 'number') { console.warn('[onClicked] invalid tab', tab); return; }
-  try { await chrome.sidePanel.open({ windowId: tab.windowId }); }
-  catch (error) { console.error('[onClicked] open', error); }
+  if (await isSiteDisabledForTab(tab)) {
+    console.info('[onClicked] suppressed: site disabled by user', tab.url);
+    flashOffBadge();
+    return;
+  }
+  await openPanelForWindow(tab.windowId);
+});
+
+// Global keyboard shortcut (Alt+Shift+L) — commands carry a user gesture in MV3,
+// so sidePanel.open is allowed from onCommand.
+chrome.commands?.onCommand.addListener(async (command) => {
+  if (command !== 'toggle-panel') return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab || typeof tab.windowId !== 'number') return;
+    if (await isSiteDisabledForTab(tab)) { flashOffBadge(); return; }
+    await openPanelForWindow(tab.windowId);
+  } catch (error) { console.error('[onCommand] open', error); }
 });
 
 /**
