@@ -18,6 +18,9 @@ import { isLocalHostUrl, isGeminiHostUrl } from '../utils/isLocalHostUrl.js';
 import { escapeHtml } from '../utils/escapeHtml.js';
 import { sanitizePromptSegment, sanitizePromptContext } from '../utils/sanitizePromptContext.js';
 import { computeSpectralCentroid } from '../utils/computeSpectralCentroid.js';
+import * as history from '../services/history.js';
+import * as sessions from '../services/sessions.js';
+import * as siteMatch from '../utils/siteMatch.js';
 
 const shared = {
   llm: {
@@ -49,10 +52,13 @@ const shared = {
   computeSpectralCentroid,
   sanitizePromptSegment,
   sanitizePromptContext,
+  history,
+  sessions,
+  siteMatch,
 };
 
 if (typeof globalThis !== 'undefined') {
   globalThis.LiveTranslateShared = Object.freeze(shared);
 }
 
-export { llm, translateProviders, isCapturableTab, isLocalHostUrl, isGeminiHostUrl, escapeHtml, computeSpectralCentroid, sanitizePromptSegment, sanitizePromptContext };
+export { llm, translateProviders, isCapturableTab, isLocalHostUrl, isGeminiHostUrl, escapeHtml, computeSpectralCentroid, sanitizePromptSegment, sanitizePromptContext, history, sessions, siteMatch };

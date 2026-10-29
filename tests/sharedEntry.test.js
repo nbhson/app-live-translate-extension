@@ -17,8 +17,8 @@ describe('shared runtime bundle (sidepanel + SW single source of truth)', () => 
     expect(s).toBeTruthy();
     expect(Object.isFrozen(s)).toBe(true);
     expect(Object.keys(s).sort()).toEqual([
-      'computeSpectralCentroid', 'escapeHtml', 'isCapturableTab', 'isGeminiHostUrl',
-      'isLocalHostUrl', 'llm', 'sanitizePromptContext', 'sanitizePromptSegment', 'translate',
+      'computeSpectralCentroid', 'escapeHtml', 'history', 'isCapturableTab', 'isGeminiHostUrl',
+      'isLocalHostUrl', 'llm', 'sanitizePromptContext', 'sanitizePromptSegment', 'sessions', 'siteMatch', 'translate',
     ]);
   });
 
