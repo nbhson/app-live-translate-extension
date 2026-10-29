@@ -24,6 +24,12 @@ describe('per-site pattern matching', () => {
     expect(isSiteDisabled('https://docs.example.com/other', ['docs.example.com/meetings'])).toBe(false);
   });
 
+  it('patterns with query strings still match by path (query stripped)', () => {
+    expect(normalizeSitePattern('example.com/meet?id=1')).toBe('example.com/meet');
+    expect(isSiteDisabled('https://example.com/meet?id=99', ['example.com/meet?id=1'])).toBe(true);
+    expect(isSiteDisabled('https://example.com/meeting', ['example.com/meet?id=1'])).toBe(false);
+  });
+
   it('isSiteDisabled is safe on garbage input', () => {
     expect(isSiteDisabled('not a url', ['example.com'])).toBe(false);
     expect(isSiteDisabled('https://a.com', [null, '', 'bad pattern'])).toBe(false);

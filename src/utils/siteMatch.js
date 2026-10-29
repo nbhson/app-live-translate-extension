@@ -22,6 +22,9 @@ export function normalizeSitePattern(input) {
   hostPart = hostPart.split('@').pop() || '';
   hostPart = hostPart.split(':')[0] || '';
   if (!hostPart || !hostPart.includes('.') || /\s/.test(hostPart)) return null;
+  // Query strings are not part of path-prefix matching: URL.pathname never
+  // carries the query, so "example.com/meet?id=1" would otherwise never match.
+  pathPart = pathPart.split('?')[0];
   pathPart = pathPart.replace(/\/+$/, '');
   return pathPart ? hostPart + pathPart : hostPart;
 }
@@ -53,7 +56,8 @@ export function isSiteDisabled(url, patterns) {
     if (!hostMatches(pH, u.hostname)) continue;
     if (!pPath) return true;
     // pattern path prefix must match a real path segment boundary
-    if (pathname === pPath || pathname.startsWith(pPath + '/') || pathname.startsWith(pPath + '?')) return true;
+    // (URL.pathname never contains the query — it was stripped at normalize time)
+    if (pathname === pPath || pathname.startsWith(pPath + '/')) return true;
   }
   return false;
 }
