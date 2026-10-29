@@ -5,6 +5,22 @@
 'use strict';
 try { performance.mark('sidepanel-js-start'); } catch { /* expected: performance API may be unavailable */ }
 
+// --- Shared runtime bundle (canonical provider/translate/utils) ---
+// Built by `npm run build` to dist/shared.js (loaded by sidepanel.html before
+// this script). Sidepanel now consumes the SAME tested implementations as
+// src/services/* instead of hand-maintained mirrors (Round 2 dedupe follow-up).
+const Shared = (typeof globalThis !== 'undefined') ? globalThis.LiveTranslateShared : null;
+if (!Shared) {
+  // Fail loudly: missing bundle means `npm run build` was not run — never
+  // silently fall back to a second hand-maintained copy (drift risk).
+  const msg = 'Live Translate: shared runtime bundle missing. Run `npm run build` and reload the extension.';
+  console.error('[LiveTranslate]', msg);
+  try {
+    document.body.innerHTML = '<div style="padding:24px;font-family:system-ui;color:#ef4444">' + msg + '</div>';
+  } catch { /* expected: DOM may not be ready */ }
+  throw new Error(msg);
+}
+
 /** @type {const} */
 const CONFIG = Object.freeze({
   SILENCE_THRESHOLD: 900,
@@ -692,12 +708,9 @@ function syncState() {
 // logic is testable & future ESM sidepanel (dist/main.js) can share same contract.
 // Existing functions delegate to Harness; UI behavior unchanged.
 const Harness = (() => {
-  const _isCapturableTab = (tab) => {
-    if (!tab || typeof tab.id !== 'number' || typeof tab.url !== 'string') return false;
-    const s = String(tab.url).trim();
-    if (!s || s.startsWith('chrome://') || s.startsWith('chrome-extension://') || s.startsWith('about:') || s.startsWith('edge://')) return false;
-    try { const u = new URL(s); if (!['http:', 'https:'].includes(u.protocol)) return false; if (['chrome.google.com','chromewebstore.google.com','accounts.google.com'].some(b => u.hostname===b || u.hostname.endsWith('.'+b))) return false; return true; } catch { return false; }
-  };
+  // Canonical implementation from the shared bundle (single source of truth
+  // for background + sidepanel + tests).
+  const _isCapturableTab = Shared.isCapturableTab;
   return Object.freeze({
     config: CONFIG,
     state: State,
@@ -738,66 +751,20 @@ let providerConfig = {
   model: 'gemini-2.5-flash',
   thinkingEnabled: true
 };
-/** Thinking toggle — ON (default) = current behavior; OFF disables model reasoning/thinking across backends */
-function isThinkingEnabledSide(cfg, opts) {
-  const v = (opts && opts.thinkingEnabled !== undefined) ? opts.thinkingEnabled : (cfg ? (cfg.thinkingEnabled !== undefined ? cfg.thinkingEnabled : cfg.thinking) : true);
-  if (typeof v === 'string') return !/^(off|false|0|disabled|disable|no)$/i.test(v.trim());
-  return v !== false && v !== 0;
-}
-function geminiThinkingOffConfigSide() { return { thinkingConfig: { thinkingBudget: 0, includeThoughts: false } }; }
-function openaiThinkingOffParamsSide() {
-  return {
-    reasoning_effort: 'none',
-    reasoning: { effort: 'none', exclude: true },
-    thinking: { type: 'disabled' },
-    think: false,
-    enable_thinking: false,
-    chat_template_kwargs: { enable_thinking: false },
-  };
-}
-/** Actionable error for non-OK provider responses (mirror of src friendlyProviderError). 403 from local/Ollama = blocked extension origin. */
+/** Thinking toggle — canonical impl via shared bundle (mirror removed, Round 2) */
+const isThinkingEnabledSide = (cfg, opts) => Shared.llm.isThinkingEnabled(cfg, opts);
+const geminiThinkingOffConfigSide = () => Shared.llm.geminiThinkingOffConfig();
+const openaiThinkingOffParamsSide = () => Shared.llm.openaiThinkingOffParams();
 /**
- * Hostname-based local check — `includes('localhost')` trước đây khớp cả
- * `https://evil.com/?x=localhost` (bỏ qua API key requirement + misroute hint).
+ * Hostname-based local / Gemini host checks — canonical impl via shared bundle.
+ * (`includes('localhost')` trước đây khớp cả `https://evil.com/?x=localhost`.)
  * @param {string} u
  * @returns {boolean}
  */
-function isLocalHostUrl(u) {
-  try {
-    const h = new URL(String(u)).hostname;
-    return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h === '[::1]';
-  } catch { return false; }
-}
-function isGeminiHostUrl(u) {
-  try { return new URL(String(u)).hostname === 'generativelanguage.googleapis.com'; }
-  catch { return false; }
-}
-function friendlyProviderErrorSide(status, bodyText, baseUrl) {
-  let msg = `HTTP ${status}`;
-  const t = String(bodyText == null ? '' : bodyText).slice(0, 500);
-  if (t) {
-    let detail = '';
-    try {
-      const d = JSON.parse(t);
-      const e = d && d.error;
-      if (typeof e === 'string') detail = e;
-      else if (e && typeof e.message === 'string') detail = e.message;
-      else if (e && typeof e.msg === 'string') detail = e.msg;
-      else if (e && typeof e === 'object') { try { detail = JSON.stringify(e).slice(0, 300); } catch { /* expected: JSON.stringify may throw on circular error objects */ } }
-      else if (d && typeof d.message === 'string') detail = d.message;
-    } catch {
-      if (t.length <= 200 && !/^\s*</.test(t)) detail = t;
-    }
-    detail = String(detail || '').trim().slice(0, 300);
-    if (detail) msg += ': ' + detail;
-  }
-  const url = String(baseUrl || '');
-  const isLocalSide = isLocalHostUrl(url);
-  if (Number(status) === 403 && (isLocalSide || /ollama/i.test(url))) {
-    msg += ' — Ollama blocked the extension origin. Restart Ollama with OLLAMA_ORIGINS="chrome-extension://*" (e.g. OLLAMA_ORIGINS="*" ollama serve), then retry.';
-  }
-  return new Error(msg);
-}
+const isLocalHostUrl = (u) => Shared.isLocalHostUrl(u);
+const isGeminiHostUrl = (u) => Shared.isGeminiHostUrl(u);
+/** Actionable error for non-OK provider responses — canonical impl via shared bundle. */
+const friendlyProviderErrorSide = (status, bodyText, baseUrl) => Shared.llm.friendlyProviderError(status, bodyText, baseUrl);
 // keep alias for backward compat in storage
 let geminiConfig = providerConfig;
 
@@ -829,17 +796,18 @@ const settingsBtn = DOM.settingsBtn; const settingsOverlay = DOM.settingsOverlay
 const apiWarningCard = DOM.apiWarningCard; const configNowBtn = DOM.configNowBtn; const summaryLangSelect = DOM.summaryLangSelect; const summaryDetailSelect = DOM.summaryDetailSelect; const generateSummaryBtn = DOM.generateSummaryBtn; const copySummaryBtn = DOM.copySummaryBtn; const summaryPlaceholder = DOM.summaryPlaceholder; const summaryMarkdown = DOM.summaryMarkdown; const summaryLoading = DOM.summaryLoading; const summaryContent = DOM.summaryContent;
 
 // --- Pure utils (testable, no side effects) ---
-/** Escape HTML — covers &, <, >, ", ', ` */
-function escapeHtml(str) { if (!str) return ''; return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;'); }
+/** Escape HTML — canonical impl via shared bundle (mirror removed, Round 2) */
+const escapeHtml = (str) => Shared.escapeHtml(str);
 /** Debounce with cancel */
 function debounce(fn, ms) { let t=null; const d=(...a)=>{ if(t) clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; d.cancel=()=>{ if(t) clearTimeout(t); t=null; }; return d; }
 /** Promise wrapper for chrome.storage — validated, lastError aware, size capped */
 function storageGet(keys) { try { const p = chrome.storage.local.get(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageGet]',e);return {};}); return new Promise((res)=> chrome.storage.local.get(keys, (r)=>{ if(chrome.runtime.lastError){console.warn('[storageGet]',chrome.runtime.lastError.message); res({});} else res(r||{});})); } catch(e){ console.warn('[storageGet]',e); return Promise.resolve({}); } }
 function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'){ const cap = k==='compressedSummary' ? COMPRESSED_SUMMARY_MAX_CHARS + 5000 : 8000; if(v.length>cap) obj[k]=v.slice(-cap); } } const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
 function isValidUrl(s) { try { new URL(s); return true; } catch { return false; } }
-function sanitizePromptContext(s) { return String(s||'').trim().slice(0,600).replace(/"""/g,'"\'"').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/[ \t]{3,}/g,' ').trim(); }
-/** Sanitize LARGE transcript segments (no 600 cap) — same injection protection, keeps tail up to maxChars. Mirror of src/utils/sanitizePromptContext.js sanitizePromptSegment(). */
-function sanitizePromptSegmentSide(s, maxChars) { const cap = Math.max(1000, Number(maxChars) || 12000); let t = String(s||'').trim(); if (t.length > cap) t = t.slice(-cap); return t.replace(/"""/g,'"\'"').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g,'').replace(/[ \t]{3,}/g,' ').trim(); }
+/** Sanitize short prompt context (600 cap) — canonical impl via shared bundle. */
+const sanitizePromptContext = (s) => Shared.sanitizePromptContext(s);
+/** Sanitize LARGE transcript segments (no 600 cap) — canonical impl via shared bundle. */
+const sanitizePromptSegmentSide = (s, maxChars) => Shared.sanitizePromptSegment(s, maxChars);
 
 /**
  * Load persisted suggest context prompt (validated, no throw).
@@ -1354,13 +1322,8 @@ function teardownSpeakerMonitor() {
  * @param {number} sampleRate
  * @returns {number}
  */
-function computeSpectralCentroid(freqData, sampleRate) {
-  if (!freqData || !freqData.length || !Number.isFinite(sampleRate) || sampleRate <= 0) return 0;
-  const nyquist = sampleRate / 2; const binHz = nyquist / freqData.length;
-  let sumAmp = 0, sumWeighted = 0;
-  for (let i = 0; i < freqData.length; i++) { const amp = freqData[i] / 255; if (amp < 0.02) continue; sumAmp += amp; sumWeighted += amp * (i * binHz); }
-  return sumAmp > 0 ? sumWeighted / sumAmp : 0;
-}
+// Canonical pure impl via shared bundle (mirror removed, Round 2)
+const computeSpectralCentroid = (freqData, sampleRate) => Shared.computeSpectralCentroid(freqData, sampleRate);
 /**
  * Decide speaker toggle — pure except debounce timestamp.
  * @param {{rms:number,centroid:number}} feats
@@ -1889,209 +1852,34 @@ Rules: 3 structures + 3 answers, consistent with history. No markdown.`;
 }
 
 /**
- * Retry fetch with timeout — mirror of src/services/llm/provider.js
- * (fetchWithTimeout + fetchWithRetry). Keep in sync with that file.
+ * Retry fetch with timeout — canonical impl via shared bundle
+ * (src/services/llm/provider.js fetchWithRetry; mirror removed, Round 2).
  * Internal AbortController enforces timeout and links an external signal.
  */
-async function fetchWithRetrySidepanel(url, fetchOpts, timeoutMs = 30000, maxRetries = 2) {
-  const external = fetchOpts && fetchOpts.signal;
-  let lastErr = null;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const ctrl = new AbortController();
-    let abortHandler = null;
-    if (external) {
-      abortHandler = () => ctrl.abort();
-      if (external.aborted) ctrl.abort();
-      else external.addEventListener('abort', abortHandler, { once: true });
-    }
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, { ...fetchOpts, signal: ctrl.signal });
-      if (res.ok) return res;
-      const status = res.status;
-      const retryable = status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
-      if (retryable && attempt < maxRetries) {
-        let delay = Math.pow(2, attempt) * 500 + Math.random() * 300;
-        try { const ra = res.headers.get('Retry-After'); if (ra) delay = Math.max(delay, parseInt(ra, 10) * 1000); } catch (e) { console.error('[LiveTranslate] Retry-After header parse', e); }
-        try { await res.text(); } catch { /* expected: discard error response body */ }
-        await new Promise(r => setTimeout(r, delay));
-        continue;
-      }
-      return res;
-    } catch (e) {
-      lastErr = e;
-      if (e.name === 'AbortError') throw e;
-      if (attempt < maxRetries) { await new Promise(r => setTimeout(r, Math.pow(2, attempt) * 400)); continue; }
-      throw e;
-    } finally {
-      clearTimeout(t);
-      if (external && abortHandler) try { external.removeEventListener('abort', abortHandler); } catch { /* expected: cleanup: removeEventListener */ }
-    }
-  }
-  throw lastErr || new Error('fetch failed');
-}
-async function callProviderForSuggest(prompt, opts) {
-  opts = opts || {};
-  if (!prompt || typeof prompt !== 'string' || !prompt.trim()) throw new Error('Empty prompt');
-  const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
-  const model = providerConfig.model;
-  const apiKey = providerConfig.apiKey;
-  const isLocal = isLocalHostUrl(baseUrl);
-  const isGemini = isGeminiHostUrl(baseUrl);
-  const isOllama = /ollama/i.test(baseUrl) || /ollama/i.test(model);
-  function geminiEmptyReasonSide(data) {
-    const cand = data && data.candidates && data.candidates[0];
-    if (!cand) {
-      const block = data && data.promptFeedback && data.promptFeedback.blockReason;
-      if (block) return 'Blocked by Gemini: ' + block;
-      return 'Empty LLM response';
-    }
-    const fr = cand.finishReason;
-    if (fr && fr !== 'STOP' && fr !== 'stop') {
-      if (fr === 'SAFETY') return 'Empty LLM response (blocked by safety filter)';
-      if (fr === 'RECITATION') return 'Empty LLM response (recitation block)';
-      if (fr === 'MAX_TOKENS') return 'Empty LLM response (max tokens reached)';
-      return 'Empty LLM response (finishReason: ' + fr + ')';
-    }
-    return 'Empty LLM response';
-  }
-  function shortenPromptForRetrySide(p) {
-    return String(p).replace(/60-120 words/g, '30-60 words').replace(/3-5 sentences/g, '2-3 sentences');
-  }
-  const thinkingOn = isThinkingEnabledSide(providerConfig, opts);
-  const geminiThinkOff = thinkingOn ? {} : geminiThinkingOffConfigSide();
-  const openaiThinkOff = thinkingOn ? {} : openaiThinkingOffParamsSide();
-  function geminiJsonConfig(max) { return { temperature: 0.8, maxOutputTokens: max, responseMimeType: 'application/json', ...geminiThinkOff }; }
-  // Gemini và OpenAI-compatible dùng cùng cặp 512/1024 — ternary 3 nhánh
-  // trước đây (2 nhánh giống hệt nhau) gộp lại.
-  let curMax = isOllama ? (opts.quality === 'fast' ? 384 : 700) : (opts.quality === 'fast' ? 512 : 1024);
-  let curPrompt = prompt;
-  if (isGemini) {
-    const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-    // streaming fast-path
-    if (opts.onChunk && !isLocal) {
-      try {
-        const streamUrl = `${baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}&alt=sse`;
-        // fetchWithRetrySidepanel (timeout 20s, 0 retry) — bare fetch trước đây
-        // không timeout: SSE stall treo State.suggestInFlight vĩnh viễn, chặn
-        // mọi retry cho hash đó.
-        const sRes = await fetchWithRetrySidepanel(streamUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) }) }, 20000, 0);
-        if (sRes.ok && sRes.body && sRes.body.getReader) {
-          const reader = sRes.body.getReader(); const dec = new TextDecoder(); let acc=''; let buf='';
-          while (true) { const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const ch=j.candidates?.[0]?.content?.parts?.[0]?.text||''; if(ch){acc+=ch; try{opts.onChunk(acc);}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }}}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }} }
-          if (acc && acc.trim()) return acc;
-        }
-      } catch(e){ console.warn('[provider] Gemini stream fallback', e.message); }
-    }
-    let lastErr = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const res = await fetchWithRetrySidepanel(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: curPrompt }] }], generationConfig: geminiJsonConfig(curMax) })
-      }, 20000, 1);
-      if (!res.ok) {
-        const bodyText = await res.text().catch(() => '');
-        throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
-      }
-      const data = await res.json();
-      const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      if (txt && txt.trim()) return txt;
-      const reason = geminiEmptyReasonSide(data);
-      console.warn(`[provider] Gemini attempt ${attempt+1} empty: ${reason} (prompt ${curPrompt.length} chars, max ${curMax})`, data);
-      lastErr = new Error(reason);
-      if (reason.includes('max tokens') || reason.includes('MAX_TOKENS')) { curMax = 1800; curPrompt = shortenPromptForRetrySide(curPrompt); }
-      if (attempt === 0) await new Promise(r => setTimeout(r, 600));
-    }
-    throw lastErr;
-  } else {
-    const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
-    const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    if (opts.onChunk && !isLocal && !isOllama) {
-      try {
-        // Timeout cho stream fast-path (khác với bare fetch trước đây — stalled
-        // SSE để suggestInFlight pending vĩnh viễn).
-        const sRes = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify({ model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: 0.85, max_tokens: curMax, stream: true, response_format: { type: 'json_object' }, ...openaiThinkOff }) }, 20000, 0);
-        if (sRes.ok && sRes.body && sRes.body.getReader) {
-          const reader=sRes.body.getReader(); const dec=new TextDecoder(); let acc=''; let buf='';
-          while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); const lines=buf.split('\n'); buf=lines.pop()||''; for(const line of lines){ const t=line.trim(); if(!t.startsWith('data:')) continue; const p=t.slice(5).trim(); if(!p||p==='[DONE]') continue; try{ const j=JSON.parse(p); const d=j.choices?.[0]?.delta?.content||j.choices?.[0]?.message?.content||''; if(d){acc+=d; try{opts.onChunk(acc);}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }}}catch { /* expected: SSE per-line JSON.parse / onChunk guard */ }} }
-          if(acc && acc.trim()) return acc;
-        }
-      } catch(e){ console.warn('[provider] OpenAI stream fallback', e.message); }
-    }
-    let lastErr = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const payload = { model, messages: [{ role: 'system', content: 'You output ONLY JSON object with "structures" and "answers" arrays. No markdown, no extra text.' },{ role: 'user', content: curPrompt }], temperature: isOllama ? 0.7 : 0.85, max_tokens: curMax, ...(isOllama ? {} : { response_format: { type: 'json_object' } }), ...openaiThinkOff };
-      let res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 1);
-      if (!res.ok && res.status === 400 && !isOllama) { try{await res.text();}catch { /* expected: discard error response body */ } delete payload.response_format; res = await fetchWithRetrySidepanel(url, { method: 'POST', headers, body: JSON.stringify(payload) }, 20000, 0); }
-      if (!res.ok) {
-        const bodyText = await res.text().catch(() => '');
-        throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
-      }
-      const data = await res.json();
-      let txt = data.choices?.[0]?.message?.content || '';
-      if (!txt && data.message?.content) txt = data.message.content;
-      if (!txt && typeof data.response === 'string') txt = data.response;
-      if (txt && txt.trim()) return txt;
-      const finish = data.choices?.[0]?.finish_reason;
-      const usage = data.usage;
-      console.warn(`[provider] OpenAI attempt ${attempt+1} empty: finish=${finish} usage=${JSON.stringify(usage)} prompt ${curPrompt.length} chars max ${curMax}`, data);
-      lastErr = new Error(finish === 'content_filter' ? 'Empty LLM response (content filter)' : finish === 'length' ? 'Empty LLM response (max tokens / length)' : 'Empty LLM response');
-      if (finish === 'length') { curMax = 1800; curPrompt = shortenPromptForRetrySide(curPrompt); }
-      if (attempt === 0) await new Promise(r => setTimeout(r, 600));
-    }
-    throw lastErr;
-  }
+const fetchWithRetrySidepanel = (url, fetchOpts, timeoutMs = 30000, maxRetries = 2) =>
+  Shared.llm.fetchWithRetry(url, fetchOpts, timeoutMs, maxRetries);
+
+/**
+ * Suggest provider call — thin adapter over the canonical shared
+ * implementation (closures on sidepanel `providerConfig`).
+ * Streaming fast-path runs whenever `opts.onChunk` is provided and the
+ * provider is remote (canonical requires `opts.stream` — set it here).
+ * Canonical also forwards `signal` and validates apiKey (strict, R2-2).
+ */
+function callProviderForSuggest(prompt, opts = {}) {
+  return Shared.llm.callProviderForSuggest(prompt, providerConfig, {
+    ...opts,
+    stream: opts.onChunk ? true : !!opts.stream,
+    timeout: opts.timeout ?? 20000,
+  });
 }
 
-async function callProviderGeneric(prompt, opts = {}) {
-  const baseUrl = providerConfig.baseUrl.replace(/\/+$/, '');
-  const model = providerConfig.model;
-  const apiKey = providerConfig.apiKey;
-  const isGemini = isGeminiHostUrl(baseUrl);
-  const temperature = opts.temperature ?? 0.4;
-  const maxTokens = opts.maxTokens ?? 512;
-  const systemPrompt = opts.systemPrompt || '';
-  if (!prompt || typeof prompt !== 'string') throw new Error('Empty prompt');
-  const thinkingOnGeneric = isThinkingEnabledSide(providerConfig, opts);
-  const geminiThinkOffGeneric = thinkingOnGeneric ? {} : geminiThinkingOffConfigSide();
-  const openaiThinkOffGeneric = thinkingOnGeneric ? {} : openaiThinkingOffParamsSide();
-  if (isGemini) {
-    const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent${apiKey ? `?key=${encodeURIComponent(apiKey)}` : ''}`;
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${prompt}` : prompt;
-    const res = await fetchWithRetrySidepanel(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }], generationConfig: { temperature, maxOutputTokens: maxTokens, ...geminiThinkOffGeneric } })
-    }, 18000, 1);
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => '');
-      throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
-    }
-    const data = await res.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  } else {
-    const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
-    const headers = { 'Content-Type': 'application/json' };
-    if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-    const messages = [];
-    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
-    messages.push({ role: 'user', content: prompt });
-    const res = await fetchWithRetrySidepanel(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, ...openaiThinkOffGeneric })
-    }, 18000, 1);
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => '');
-      throw friendlyProviderErrorSide(res.status, bodyText, baseUrl);
-    }
-    const data = await res.json();
-    let txt = data.choices?.[0]?.message?.content || '';
-    if (!txt && data.message?.content) txt = data.message.content;
-    return txt;
-  }
+/**
+ * Generic provider call — thin adapter over the canonical shared
+ * implementation (canonical default timeout 18000 matches previous behavior).
+ */
+function callProviderGeneric(prompt, opts = {}) {
+  return Shared.llm.callProviderGeneric(prompt, providerConfig, opts);
 }
 
 async function performCompression(isManual = false) {
@@ -3062,222 +2850,54 @@ function promoteLiveToFinal(enText) {
   return false;
 }
 
-// Fallback providers — mirror of src/services/translate/providers.js (sidepanel runtime copy)
-const MYMEMORY_ENDPOINT_SIDE = 'https://api.mymemory.translated.net/get';
-const LINGVA_ENDPOINTS_SIDE = ['https://lingva.ml/api/v1/en/vi', 'https://lingva.thedaviddelta.com/api/v1/en/vi'];
-function fetchWithTimeoutSide(url, { signal, timeoutMs = 8000 } = {}) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => { try { ctrl.abort(); } catch { /* expected: defensive: abort() does not throw */ } }, timeoutMs);
-  let onAbort = null;
-  if (signal) {
-    if (signal.aborted) { clearTimeout(t); return Promise.reject(new DOMException('Aborted', 'AbortError')); }
-    onAbort = () => { try { ctrl.abort(); } catch { /* expected: defensive: abort() does not throw */ } };
-    signal.addEventListener('abort', onAbort, { once: true });
-  }
-  return fetch(url, { signal: ctrl.signal }).finally(() => {
-    clearTimeout(t);
-    if (signal && onAbort) try { signal.removeEventListener('abort', onAbort); } catch { /* expected: cleanup: removeEventListener */ }
-  });
-}
-function chunkForMyMemorySide(text, maxLen) {
-  const s = String(text || '');
-  maxLen = maxLen || CONFIG.MYMEMORY_MAX_CHARS || 450;
-  if (s.length <= maxLen) return [s];
-  const parts = s.split(/(?<=[.!?])\s+/);
-  const chunks = []; let cur = '';
-  for (const p of parts) {
-    if ((cur + ' ' + p).trim().length > maxLen) {
-      if (cur) chunks.push(cur.trim());
-      if (p.length > maxLen) { for (let i = 0; i < p.length; i += maxLen) chunks.push(p.slice(i, i + maxLen)); cur = ''; }
-      else cur = p;
-    } else cur = cur ? `${cur} ${p}` : p;
-  }
-  if (cur) chunks.push(cur.trim());
-  return chunks.filter(Boolean);
-}
-async function translateViaMyMemorySide(text, opts = {}) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed || opts.signal?.aborted) return '';
-  const chunks = chunkForMyMemorySide(trimmed);
-  const outs = [];
-  for (const c of chunks) {
-    if (opts.signal?.aborted) return '';
-    let res;
-    try { res = await fetchWithTimeoutSide(`${MYMEMORY_ENDPOINT_SIDE}?q=${encodeURIComponent(c)}&langpair=en|vi`, { signal: opts.signal, timeoutMs: CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS }); }
-    catch (e) { if (e?.name === 'AbortError') return ''; return ''; }
-    if (!res?.ok) return '';
-    let data; try { data = await res.json(); } catch { return ''; }
-    const t = String(data?.responseData?.translatedText || '').trim();
-    if (/MYMEMORY WARNING/i.test(t)) return '';
-    if (!t) return '';
-    if (t.toLowerCase() === c.toLowerCase() && c.length > 15) return '';
-    outs.push(t);
-  }
-  return outs.join(' ').trim();
-}
-async function translateViaLingvaSide(text, opts = {}) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed || trimmed.length > 2000 || opts.signal?.aborted) return '';
-  for (const base of LINGVA_ENDPOINTS_SIDE) {
-    if (opts.signal?.aborted) return '';
-    let res;
-    try { res = await fetchWithTimeoutSide(`${base.replace(/\/+$/, '')}/${encodeURIComponent(trimmed)}`, { signal: opts.signal, timeoutMs: CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS }); }
-    catch (e) { if (e?.name === 'AbortError') return ''; continue; }
-    if (!res?.ok) continue;
-    try { const data = await res.json(); const out = String(data?.translation || '').trim(); if (out) return out; } catch (e) { console.error('[LiveTranslate] translation response json()', e); }
-  }
-  return '';
-}
-function isValidAiProviderConfigSide(cfg) {
-  if (!cfg || typeof cfg !== 'object') return false;
-  const base = String(cfg.baseUrl || '').trim(); const model = String(cfg.model || '').trim();
-  if (!/^https?:\/\/.+/.test(base) || !model) return false;
-  const isLocal = isLocalHostUrl(base);
-  if (!cfg.apiKey && !isLocal) return false;
-  return true;
-}
-async function translateViaAISide(text, opts = {}) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed || opts.signal?.aborted) return '';
-  if (!isValidAiProviderConfigSide(providerConfig)) return '';
-  try {
-    const raw = await callProviderGeneric(`Translate the following English text to Vietnamese. Output ONLY the Vietnamese translation, no explanation, no quotes, no romanization.\n\nEnglish: ${trimmed}`, { temperature: 0.1, maxTokens: 512, systemPrompt: 'You are a precise English to Vietnamese translator. Return only the translation.' });
-    const out = String(raw || '').trim().replace(/^["'“”`]+|["'“”`]+$/g, '').trim();
-    if (!out) return '';
-    if (out.toLowerCase() === trimmed.toLowerCase() && trimmed.length > 15) return '';
-    return out;
-  } catch (e) { if (e?.name === 'AbortError') return ''; return ''; }
-}
-async function translateWithFallbackChainSide(text, opts = {}) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed) return { text: '', via: 'none' };
-  if (opts.signal?.aborted) return { text: '', via: 'aborted' };
-  const order = ['mymemory', 'lingva', 'ai'];
-  for (const name of order) {
-    if (opts.signal?.aborted) return { text: '', via: 'aborted' };
-    if (name === 'ai' && opts.disableAI) continue;
-    let out = '';
-    if (name === 'mymemory') out = await translateViaMyMemorySide(trimmed, opts);
-    else if (name === 'lingva') out = await translateViaLingvaSide(trimmed, opts);
-    else if (name === 'ai') out = await translateViaAISide(trimmed, opts);
-    if (out) return { text: out, via: name };
-  }
-  return { text: '', via: 'failed' };
-}
+// Fallback providers + Google primary — canonical impls via shared bundle
+// (src/services/translate/* — hand-maintained mirrors removed, Round 2 dedupe).
+// Adapter semantics:
+// - MyMemory/Lingva fetch timeout = CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS
+// - AI fallback timeout pinned to CONFIG.TRANSLATE_AI_FALLBACK_TIMEOUT_MS
+//   (canonical default 15000; chain-level timeoutMs must not shrink it)
+// - Results cached through the sidepanel LRU translationCache (capped)
+const translateCacheAdapter = {
+  has: (k) => translationCache.has(k),
+  get: (k) => {
+    // LRU touch on read (keep recent entries, evict oldest beyond cap)
+    const v = translationCache.get(k);
+    if (translationCache.has(k)) { translationCache.delete(k); translationCache.set(k, v); }
+    return v;
+  },
+  set: (k, v) => {
+    translationCache.set(k, v);
+    if (translationCache.size > TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value);
+  },
+};
+/** AI-fallback callGeneric adapter — canonical signature (prompt, cfg, opts). */
+const callGenericForTranslate = (prompt, cfg, o) =>
+  Shared.llm.callProviderGeneric(prompt, cfg, { ...o, timeout: CONFIG.TRANSLATE_AI_FALLBACK_TIMEOUT_MS });
 
 // Translate Text via Google Translate free API — cache + chunking + retry + LRU
-// + fallback chain MyMemory -> Lingva -> AI (mirror src/services/translate/translate.js)
+// + fallback chain MyMemory -> Lingva -> AI (canonical impl via shared bundle)
 async function translateText(text, opts = {}) {
-  if (!text || !String(text).trim()) return '';
-  const trimmed = String(text).trim();
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return '';
   if (translationCache.has(trimmed)) {
     const cached = translationCache.get(trimmed);
     translationCache.delete(trimmed); translationCache.set(trimmed, cached);
     return cached;
   }
-  const googleOut = await translateViaGoogleSide(trimmed, opts);
-  if (googleOut) return googleOut;
-  if (opts.signal?.aborted) return '';
-  if (opts.fallback === false || CONFIG.TRANSLATE_FALLBACK_ENABLED === false) return '';
-  try {
-    const { text: fb, via } = await translateWithFallbackChainSide(trimmed, opts);
-    if (fb) {
-      translationCache.set(trimmed, fb);
-      if (translationCache.size > TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value);
-      console.warn(`[translate] fallback via ${via}:`, trimmed.slice(0, 60));
-      return fb;
-    }
-  } catch (e) { console.error('[LiveTranslate] translateWithFallbackChainSide', e); }
-  return '';
+  return Shared.translate.translateText(trimmed, {
+    ...opts,
+    fallback: opts.fallback !== false && CONFIG.TRANSLATE_FALLBACK_ENABLED !== false,
+    cache: translateCacheAdapter,
+    controllers: activeTranslateControllers,
+    providerConfig,
+    callGeneric: callGenericForTranslate,
+    timeoutMs: CONFIG.TRANSLATE_FALLBACK_TIMEOUT_MS,
+    onFallback: (via, t) => console.warn(`[translate] fallback via ${via}:`, String(t).slice(0, 60)),
+  });
 }
-async function translateViaGoogleSide(text, opts = {}) {
-  if (!text || !String(text).trim()) return '';
-  const trimmed = String(text).trim();
-  const TRANSLATE_MAX = 4200;
-  if (trimmed.length > TRANSLATE_MAX) {
-    const parts = (() => {
-      const segs = trimmed.split(/(?<=[.!?])\s+/);
-      const chunks=[]; let cur='';
-      for (const p of segs) {
-        if ((cur+' '+p).trim().length > TRANSLATE_MAX) {
-          if (cur) chunks.push(cur.trim());
-          if (p.length > TRANSLATE_MAX) { for (let i=0;i<p.length;i+=TRANSLATE_MAX) chunks.push(p.slice(i,i+TRANSLATE_MAX)); cur=''; }
-          else cur=p;
-        } else cur = cur ? cur+' '+p : p;
-      }
-      if (cur) chunks.push(cur.trim());
-      return chunks;
-    })();
-    if (parts.length>1) {
-      const outs=[];
-      for (const c of parts) { if (opts.signal?.aborted) return ''; const r=await translateText(c, opts); outs.push(r||c); }
-      const joined=outs.join(' ');
-      if (joined) { translationCache.set(trimmed, joined); if (translationCache.size>TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value); }
-      return joined;
-    }
-  }
-  const retries = opts.retries ?? 2;
-  let lastErr=null;
-  for (let attempt=0; attempt<=retries; attempt++) {
-    const controller=new AbortController();
-    const hasExternalSignal=!!opts.signal;
-    const signal=hasExternalSignal? opts.signal : controller.signal;
-    if (!hasExternalSignal) activeTranslateControllers.add(controller);
-    const timeoutId=setTimeout(()=>{ try{controller.abort();}catch { /* expected: defensive: abort() does not throw */ } }, CONFIG.TRANSLATE_TIMEOUT_MS);
-    let externalAbortHandler=null;
-    if (hasExternalSignal && opts.signal!==controller.signal) {
-      externalAbortHandler=()=>controller.abort();
-      opts.signal.addEventListener('abort', externalAbortHandler, {once:true});
-    }
-    try {
-      const url=`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=vi&dt=t&q=${encodeURIComponent(trimmed)}`;
-      // LUÔN fetch với controller.signal: khi caller truyền external signal,
-      // externalAbortHandler đã bridge external→controller — dùng opts.signal
-      // trực tiếp trước đây khiến TRANSLATE_TIMEOUT_MS KHÔNG áp dụng cho các
-      // request external-signaled (interim VI preview) → hang vô hạn.
-      const response=await fetch(url, { signal: controller.signal });
-      if (!response.ok) {
-        const status=response.status;
-        if ((status===429 || status>=500) && attempt<retries) {
-          let delay=Math.pow(2,attempt)*400+Math.random()*200;
-          try{ const ra=response.headers.get('Retry-After'); if(ra) delay=Math.max(delay, parseInt(ra,10)*1000);}catch (e) { console.error('[LiveTranslate] Retry-After header parse', e); }
-          try{ await response.text(); }catch { /* expected: discard error response body */ }
-          await new Promise(r=>setTimeout(r, delay));
-          continue;
-        }
-        throw new Error(`HTTP ${status}`);
-      }
-      const data=await response.json();
-      let translation='';
-      if (data && data[0]) for (let i=0;i<data[0].length;i++) if (data[0][i]&&data[0][i][0]) translation+=data[0][i][0];
-      translation=String(translation||'').trim();
-      if (!translation && attempt<retries && trimmed.length>3) { await new Promise(r=>setTimeout(r, 300*(attempt+1))); continue; }
-      if (translation) {
-        translationCache.set(trimmed, translation);
-        if (translationCache.size>TRANSLATION_CACHE_MAX) translationCache.delete(translationCache.keys().next().value);
-      }
-      return translation;
-    } catch (error) {
-      lastErr=error;
-      if (error.name==='AbortError') return '';
-      const retryable=error.message && (error.message.includes('Failed to fetch')||error.message.includes('NetworkError'));
-      if (retryable && attempt<retries) { await new Promise(r=>setTimeout(r, Math.pow(2,attempt)*350)).catch(()=>{}); continue; }
-      if (attempt>=retries) { console.error('Translation error:', error); return ''; }
-      await new Promise(r=>setTimeout(r, Math.pow(2,attempt)*300)).catch(()=>{});
-    } finally {
-      clearTimeout(timeoutId);
-      if (externalAbortHandler) try{ opts.signal.removeEventListener('abort', externalAbortHandler);}catch { /* expected: cleanup: removeEventListener */ }
-      activeTranslateControllers.delete(controller);
-    }
-  }
-  if (lastErr) console.error('[translateText] exhausted', lastErr);
-  return '';
-}
-
-/** Abort all pending translate fetches — idempotent */
+/** Abort all pending translate fetches — canonical impl via shared bundle (idempotent) */
 function abortAllPendingTranslations() {
-  for (const c of activeTranslateControllers) { try { c.abort(); } catch (e) { console.error('[LiveTranslate] abort pending translations', e); } }
-  activeTranslateControllers.clear();
+  Shared.translate.abortAll(activeTranslateControllers);
 }
 
 /**

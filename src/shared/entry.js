@@ -16,6 +16,8 @@ import { translateText as translateTextCore, abortAll as abortTranslations } fro
 import { isCapturableTab } from '../background/isCapturableTab.js';
 import { isLocalHostUrl, isGeminiHostUrl } from '../utils/isLocalHostUrl.js';
 import { escapeHtml } from '../utils/escapeHtml.js';
+import { sanitizePromptSegment, sanitizePromptContext } from '../utils/sanitizePromptContext.js';
+import { computeSpectralCentroid } from '../utils/computeSpectralCentroid.js';
 
 const shared = {
   llm: {
@@ -44,10 +46,13 @@ const shared = {
   isLocalHostUrl,
   isGeminiHostUrl,
   escapeHtml,
+  computeSpectralCentroid,
+  sanitizePromptSegment,
+  sanitizePromptContext,
 };
 
 if (typeof globalThis !== 'undefined') {
   globalThis.LiveTranslateShared = Object.freeze(shared);
 }
 
-export { llm, translateProviders, isCapturableTab, isLocalHostUrl, isGeminiHostUrl, escapeHtml };
+export { llm, translateProviders, isCapturableTab, isLocalHostUrl, isGeminiHostUrl, escapeHtml, computeSpectralCentroid, sanitizePromptSegment, sanitizePromptContext };
