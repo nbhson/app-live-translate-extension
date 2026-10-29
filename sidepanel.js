@@ -5,21 +5,30 @@
 'use strict';
 try { performance.mark('sidepanel-js-start'); } catch { /* expected: performance API may be unavailable */ }
 
-// --- Shared runtime bundle (canonical provider/translate/utils) ---
-// Built by `npm run build` to dist/shared.js (loaded by sidepanel.html before
-// this script). Sidepanel now consumes the SAME tested implementations as
-// src/services/* instead of hand-maintained mirrors (Round 2 dedupe follow-up).
-const Shared = (typeof globalThis !== 'undefined') ? globalThis.LiveTranslateShared : null;
-if (!Shared) {
-  // Fail loudly: missing bundle means `npm run build` was not run — never
-  // silently fall back to a second hand-maintained copy (drift risk).
-  const msg = 'Live Translate: shared runtime bundle missing. Run `npm run build` and reload the extension.';
-  console.error('[LiveTranslate]', msg);
-  try {
-    document.body.innerHTML = '<div style="padding:24px;font-family:system-ui;color:#ef4444">' + msg + '</div>';
-  } catch { /* expected: DOM may not be ready */ }
-  throw new Error(msg);
-}
+// --- Shared runtime (ESM) ---
+// Sidepanel is now a Vite-built ES module (dist/sidepanel.js, loaded with
+// type="module" from sidepanel.html). It imports the canonical, tested
+// src/services/* and src/utils/* modules DIRECTLY — no more
+// globalThis.LiveTranslateShared IIFE indirection (Round 3).
+// `npm run build` is still required: it bundles this entry to dist/sidepanel.js.
+import { isCapturableTab } from './src/background/isCapturableTab.js';
+import {
+  fetchWithRetry,
+  callProviderForSuggest as callProviderForSuggestCore,
+  callProviderGeneric as callProviderGenericCore,
+  isThinkingEnabled,
+  geminiThinkingOffConfig,
+  openaiThinkingOffParams,
+  friendlyProviderError,
+} from './src/services/llm/provider.js';
+import { translateText as translateTextCore, abortAll as abortTranslations } from './src/services/translate/translate.js';
+import { isLocalHostUrl, isGeminiHostUrl } from './src/utils/isLocalHostUrl.js';
+import { escapeHtml } from './src/utils/escapeHtml.js';
+import { sanitizePromptSegment, sanitizePromptContext } from './src/utils/sanitizePromptContext.js';
+import { computeSpectralCentroid } from './src/utils/computeSpectralCentroid.js';
+import * as historyStore from './src/services/history.js';
+import * as sessionStore from './src/services/sessions.js';
+import * as siteMatch from './src/utils/siteMatch.js';
 
 /** @type {const} */
 const CONFIG = Object.freeze({
@@ -720,9 +729,9 @@ function syncState() {
 // logic is testable & future ESM sidepanel (dist/main.js) can share same contract.
 // Existing functions delegate to Harness; UI behavior unchanged.
 const Harness = (() => {
-  // Canonical implementation from the shared bundle (single source of truth
-  // for background + sidepanel + tests).
-  const _isCapturableTab = Shared.isCapturableTab;
+  // Canonical implementation imported directly from src/background (single
+  // source of truth for background + sidepanel + tests).
+  const _isCapturableTab = isCapturableTab;
   return Object.freeze({
     config: CONFIG,
     state: State,
@@ -763,20 +772,16 @@ let providerConfig = {
   model: 'gemini-2.5-flash',
   thinkingEnabled: true
 };
-/** Thinking toggle — canonical impl via shared bundle (mirror removed, Round 2) */
-const isThinkingEnabledSide = (cfg, opts) => Shared.llm.isThinkingEnabled(cfg, opts);
-const geminiThinkingOffConfigSide = () => Shared.llm.geminiThinkingOffConfig();
-const openaiThinkingOffParamsSide = () => Shared.llm.openaiThinkingOffParams();
+/** Thinking toggle — canonical impl imported directly (mirror removed, Round 2) */
+const isThinkingEnabledSide = (cfg, opts) => isThinkingEnabled(cfg, opts);
+const geminiThinkingOffConfigSide = () => geminiThinkingOffConfig();
+const openaiThinkingOffParamsSide = () => openaiThinkingOffParams();
 /**
- * Hostname-based local / Gemini host checks — canonical impl via shared bundle.
+ * Hostname-based local / Gemini host checks — canonical impl imported directly.
  * (`includes('localhost')` trước đây khớp cả `https://evil.com/?x=localhost`.)
- * @param {string} u
- * @returns {boolean}
  */
-const isLocalHostUrl = (u) => Shared.isLocalHostUrl(u);
-const isGeminiHostUrl = (u) => Shared.isGeminiHostUrl(u);
-/** Actionable error for non-OK provider responses — canonical impl via shared bundle. */
-const friendlyProviderErrorSide = (status, bodyText, baseUrl) => Shared.llm.friendlyProviderError(status, bodyText, baseUrl);
+/** Actionable error for non-OK provider responses — canonical impl imported directly. */
+const friendlyProviderErrorSide = (status, bodyText, baseUrl) => friendlyProviderError(status, bodyText, baseUrl);
 // keep alias for backward compat in storage
 let geminiConfig = providerConfig;
 
@@ -808,18 +813,16 @@ const settingsBtn = DOM.settingsBtn; const settingsOverlay = DOM.settingsOverlay
 const apiWarningCard = DOM.apiWarningCard; const configNowBtn = DOM.configNowBtn; const summaryLangSelect = DOM.summaryLangSelect; const summaryDetailSelect = DOM.summaryDetailSelect; const generateSummaryBtn = DOM.generateSummaryBtn; const copySummaryBtn = DOM.copySummaryBtn; const summaryPlaceholder = DOM.summaryPlaceholder; const summaryMarkdown = DOM.summaryMarkdown; const summaryLoading = DOM.summaryLoading; const summaryContent = DOM.summaryContent;
 
 // --- Pure utils (testable, no side effects) ---
-/** Escape HTML — canonical impl via shared bundle (mirror removed, Round 2) */
-const escapeHtml = (str) => Shared.escapeHtml(str);
+/** Escape HTML — canonical impl imported directly (mirror removed, Round 2) */
 /** Debounce with cancel */
 function debounce(fn, ms) { let t=null; const d=(...a)=>{ if(t) clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; d.cancel=()=>{ if(t) clearTimeout(t); t=null; }; return d; }
 /** Promise wrapper for chrome.storage — validated, lastError aware, size capped */
 function storageGet(keys) { try { const p = chrome.storage.local.get(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageGet]',e);return {};}); return new Promise((res)=> chrome.storage.local.get(keys, (r)=>{ if(chrome.runtime.lastError){console.warn('[storageGet]',chrome.runtime.lastError.message); res({});} else res(r||{});})); } catch(e){ console.warn('[storageGet]',e); return Promise.resolve({}); } }
 function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'){ const cap = k==='compressedSummary' ? COMPRESSED_SUMMARY_MAX_CHARS + 5000 : 8000; if(v.length>cap) obj[k]=v.slice(-cap); } } const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
 function isValidUrl(s) { try { new URL(s); return true; } catch { return false; } }
-/** Sanitize short prompt context (600 cap) — canonical impl via shared bundle. */
-const sanitizePromptContext = (s) => Shared.sanitizePromptContext(s);
-/** Sanitize LARGE transcript segments (no 600 cap) — canonical impl via shared bundle. */
-const sanitizePromptSegmentSide = (s, maxChars) => Shared.sanitizePromptSegment(s, maxChars);
+/** Sanitize short prompt context (600 cap) — canonical impl imported directly. */
+/** Sanitize LARGE transcript segments (no 600 cap) — canonical impl imported directly. */
+const sanitizePromptSegmentSide = (s, maxChars) => sanitizePromptSegment(s, maxChars);
 
 /**
  * Load persisted suggest context prompt (validated, no throw).
@@ -1341,8 +1344,7 @@ function teardownSpeakerMonitor() {
  * @param {number} sampleRate
  * @returns {number}
  */
-// Canonical pure impl via shared bundle (mirror removed, Round 2)
-const computeSpectralCentroid = (freqData, sampleRate) => Shared.computeSpectralCentroid(freqData, sampleRate);
+// Canonical pure impl imported directly (mirror removed, Round 2)
 /**
  * Decide speaker toggle — pure except debounce timestamp.
  * @param {{rms:number,centroid:number}} feats
@@ -1879,7 +1881,7 @@ Rules: 3 structures + 3 answers, consistent with history. No markdown.`;
  * Internal AbortController enforces timeout and links an external signal.
  */
 const fetchWithRetrySidepanel = (url, fetchOpts, timeoutMs = 30000, maxRetries = 2) =>
-  Shared.llm.fetchWithRetry(url, fetchOpts, timeoutMs, maxRetries);
+  fetchWithRetry(url, fetchOpts, timeoutMs, maxRetries);
 
 /**
  * Suggest provider call — thin adapter over the canonical shared
@@ -1889,7 +1891,7 @@ const fetchWithRetrySidepanel = (url, fetchOpts, timeoutMs = 30000, maxRetries =
  * Canonical also forwards `signal` and validates apiKey (strict, R2-2).
  */
 function callProviderForSuggest(prompt, opts = {}) {
-  return Shared.llm.callProviderForSuggest(prompt, providerConfig, {
+  return callProviderForSuggestCore(prompt, providerConfig, {
     ...opts,
     stream: opts.onChunk ? true : !!opts.stream,
     timeout: opts.timeout ?? 20000,
@@ -1901,7 +1903,7 @@ function callProviderForSuggest(prompt, opts = {}) {
  * implementation (canonical default timeout 18000 matches previous behavior).
  */
 function callProviderGeneric(prompt, opts = {}) {
-  return Shared.llm.callProviderGeneric(prompt, providerConfig, opts);
+  return callProviderGenericCore(prompt, providerConfig, opts);
 }
 
 async function performCompression(isManual = false) {
@@ -2895,7 +2897,7 @@ const translateCacheAdapter = {
 };
 /** AI-fallback callGeneric adapter — canonical signature (prompt, cfg, opts). */
 const callGenericForTranslate = (prompt, cfg, o) =>
-  Shared.llm.callProviderGeneric(prompt, cfg, { ...o, timeout: CONFIG.TRANSLATE_AI_FALLBACK_TIMEOUT_MS });
+  callProviderGenericCore(prompt, cfg, { ...o, timeout: CONFIG.TRANSLATE_AI_FALLBACK_TIMEOUT_MS });
 
 // Translate Text via Google Translate free API — cache + chunking + retry + LRU
 // + fallback chain MyMemory -> Lingva -> AI (canonical impl via shared bundle)
@@ -2907,7 +2909,7 @@ async function translateText(text, opts = {}) {
     translationCache.delete(trimmed); translationCache.set(trimmed, cached);
     return cached;
   }
-  return Shared.translate.translateText(trimmed, {
+  return translateTextCore(trimmed, {
     ...opts,
     fallback: opts.fallback !== false && CONFIG.TRANSLATE_FALLBACK_ENABLED !== false,
     cache: translateCacheAdapter,
@@ -2920,7 +2922,7 @@ async function translateText(text, opts = {}) {
 }
 /** Abort all pending translate fetches — canonical impl via shared bundle (idempotent) */
 function abortAllPendingTranslations() {
-  Shared.translate.abortAll(activeTranslateControllers);
+  abortTranslations(activeTranslateControllers);
 }
 
 /**
@@ -4285,7 +4287,7 @@ function updateMemoryMeter() {
 
 // ============================================================================
 // Round 2 features — History archive (search + export) & session auto-save
-// Pure logic lives in src/services/history.js + sessions.js via Shared bundle.
+// Pure logic lives in src/services/history.js + sessions.js, imported directly (ESM).
 // ============================================================================
 
 const HISTORY_STORAGE_KEY = 'history';
@@ -4303,12 +4305,12 @@ let historyConfirmingClear = false;
 /** Record a finished EN→VI pair into the archive (deduped, debounced persist). */
 function recordHistoryEntry(en, vi) {
   try {
-    const entry = Shared.history.createHistoryEntry(en, vi === '[Translation failed]' ? '' : vi);
+    const entry = historyStore.createHistoryEntry(en, vi === '[Translation failed]' ? '' : vi);
     if (!entry) return;
     // dedupe: finalizeText + batch path can land the same pair twice
     const prev = historyEntries[0];
     if (prev && prev.en === entry.en && prev.vi === entry.vi) return;
-    historyEntries = Shared.history.appendHistoryEntries(historyEntries, entry);
+    historyEntries = historyStore.appendHistoryEntries(historyEntries, entry);
     if (!historySaveTimer) {
       historySaveTimer = setTimeout(() => {
         historySaveTimer = null;
@@ -4321,7 +4323,7 @@ function recordHistoryEntry(en, vi) {
 async function loadHistoryArchive() {
   try {
     const r = await storageGet([HISTORY_STORAGE_KEY]);
-    historyEntries = Shared.history.parseHistory(r[HISTORY_STORAGE_KEY]);
+    historyEntries = historyStore.parseHistory(r[HISTORY_STORAGE_KEY]);
   } catch (e) { console.warn('[LiveTranslate][history] load', e); historyEntries = []; }
 }
 
@@ -4354,7 +4356,7 @@ function renderHistoryList() {
   if (!listEl) return;
   const searchEl = document.getElementById('historySearchInput');
   const q = searchEl ? searchEl.value : '';
-  const rows = Shared.history.searchHistory(historyEntries, q);
+  const rows = historyStore.searchHistory(historyEntries, q);
   const countEl = document.getElementById('historyCount');
   if (countEl) countEl.textContent = q.trim() ? `${rows.length}/${historyEntries.length}` : String(historyEntries.length);
   listEl.textContent = '';
@@ -4406,9 +4408,9 @@ function setupHistoryFeature() {
   const searchEl = document.getElementById('historySearchInput');
   if (searchEl) searchEl.addEventListener('input', renderHistoryList);
   const txtBtn = document.getElementById('exportHistoryTxtBtn');
-  if (txtBtn) txtBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.txt', Shared.history.historyToText(historyEntries), 'text/plain;charset=utf-8'));
+  if (txtBtn) txtBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.txt', historyStore.historyToText(historyEntries), 'text/plain;charset=utf-8'));
   const jsonBtn = document.getElementById('exportHistoryJsonBtn');
-  if (jsonBtn) jsonBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.json', Shared.history.historyToJson(historyEntries), 'application/json;charset=utf-8'));
+  if (jsonBtn) jsonBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.json', historyStore.historyToJson(historyEntries), 'application/json;charset=utf-8'));
   const clearHistBtn = document.getElementById('clearHistoryBtn');
   if (clearHistBtn) clearHistBtn.addEventListener('click', async () => {
     if (!historyConfirmingClear) {
@@ -4430,7 +4432,7 @@ function setupHistoryFeature() {
 
 function captureSessionSnapshot() {
   try {
-    return Shared.sessions.createSessionSnapshot({
+    return sessionStore.createSessionSnapshot({
       en: finalizedEnPhrases,
       vi: finalizedViPhrases,
       summary: (typeof summaryMarkdown !== 'undefined' && summaryMarkdown && summaryMarkdown.dataset.rawText) || '',
@@ -4442,7 +4444,7 @@ async function autoSaveSession() {
   try {
     const snap = captureSessionSnapshot();
     if (!snap) return;
-    savedSessions = Shared.sessions.appendSession(savedSessions, snap);
+    savedSessions = sessionStore.appendSession(savedSessions, snap);
     await storageSet({ [SESSIONS_STORAGE_KEY]: savedSessions });
   } catch (e) { console.warn('[LiveTranslate][session] save', e); }
 }
@@ -4510,7 +4512,7 @@ function showRestoreBanner(session) {
 async function loadSessionsForRestore() {
   try {
     const r = await storageGet([SESSIONS_STORAGE_KEY]);
-    savedSessions = Shared.sessions.parseSessions(r[SESSIONS_STORAGE_KEY]);
+    savedSessions = sessionStore.parseSessions(r[SESSIONS_STORAGE_KEY]);
     const latest = savedSessions[0];
     if (latest && latest.pairs.length) showRestoreBanner(latest);
   } catch (e) { console.warn('[LiveTranslate][session] load', e); }
@@ -4530,7 +4532,7 @@ async function setupPerSiteBanner() {
   try {
     const r = await storageGet(['disabledSites']);
     patterns = Array.isArray(r.disabledSites) ? r.disabledSites : [];
-    disabled = Shared.siteMatch.isSiteDisabled(tab.url, patterns);
+    disabled = siteMatch.isSiteDisabled(tab.url, patterns);
   } catch (e) { console.warn('[LiveTranslate][site] check', e); return; }
   if (!disabled) return;
   let host = '';
@@ -4541,7 +4543,7 @@ async function setupPerSiteBanner() {
   const enableBtn = document.getElementById('enableSiteBtn');
   if (enableBtn) enableBtn.addEventListener('click', async () => {
     try {
-      const remaining = patterns.filter((p) => !Shared.siteMatch.isSiteDisabled(tab.url, [p]));
+      const remaining = patterns.filter((p) => !siteMatch.isSiteDisabled(tab.url, [p]));
       await storageSet({ disabledSites: remaining });
       banner.style.display = 'none';
       showToast('Đã bật lại trên trang này', 'success');

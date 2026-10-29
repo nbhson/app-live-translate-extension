@@ -1,17 +1,12 @@
-// Live Translate — Options page (Round 2)
+// Live Translate — Options page (Round 2; ESM since Round 3)
 // Manages: per-site disable list, data (history/sessions), theme default.
-// Consumes the canonical shared bundle (siteMatch/history modules) — same code
-// as the sidepanel and service worker.
+// ES module: imports the canonical src/utils + src/services modules directly —
+// same code as the sidepanel and service worker (no global bundle).
 
-'use strict';
-
-const Shared = (typeof globalThis !== 'undefined') ? globalThis.LiveTranslateShared : null;
-if (!Shared) {
-  const msg = 'Live Translate: shared runtime bundle missing. Run `npm run build` and reload the extension.';
-  console.error('[options]', msg);
-  document.body.innerHTML = '<div style="padding:24px;font-family:system-ui;color:#ef4444">' + msg + '</div>';
-  throw new Error(msg);
-}
+import { escapeHtml } from './src/utils/escapeHtml.js';
+import * as siteMatch from './src/utils/siteMatch.js';
+import * as historyStore from './src/services/history.js';
+import * as sessionStore from './src/services/sessions.js';
 
 const DISABLED_SITES_KEY = 'disabledSites';
 const HISTORY_KEY = 'history';
@@ -51,7 +46,7 @@ function flashStatus(text, isError = false) {
   flashStatus._t = setTimeout(() => { if (saveStatus) saveStatus.textContent = ''; }, 2500);
 }
 
-function escapeHtmlSafe(s) { return Shared.escapeHtml(s); }
+function escapeHtmlSafe(s) { return escapeHtml(s); }
 
 function downloadTextFile(filename, content, mime) {
   try {
@@ -107,7 +102,7 @@ function setupAddSiteForm() {
   if (!form || !input) return;
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const norm = Shared.siteMatch.normalizeSitePattern(input.value);
+    const norm = siteMatch.normalizeSitePattern(input.value);
     if (!norm) {
       if (errEl) { errEl.textContent = 'Pattern không hợp lệ — dùng dạng example.com hoặc docs.example.com/path'; errEl.style.display = 'block'; }
       return;
@@ -128,8 +123,8 @@ function setupAddSiteForm() {
 
 async function renderDataStats() {
   const r = await storageGet([HISTORY_KEY, SESSIONS_KEY]);
-  const history = Shared.history.parseHistory(r[HISTORY_KEY]);
-  const sessions = Shared.sessions.parseSessions(r[SESSIONS_KEY]);
+  const history = historyStore.parseHistory(r[HISTORY_KEY]);
+  const sessions = sessionStore.parseSessions(r[SESSIONS_KEY]);
   const hs = $id('historyStats');
   if (hs) hs.textContent = `Lịch sử: ${history.length} cặp EN→VI`;
   const sc = $id('sessionsCount');
@@ -140,12 +135,12 @@ function setupDataActions() {
   const txtBtn = $id('exportHistoryTxtBtn');
   if (txtBtn) txtBtn.addEventListener('click', async () => {
     const r = await storageGet([HISTORY_KEY]);
-    downloadTextFile('live-translate-history.txt', Shared.history.historyToText(Shared.history.parseHistory(r[HISTORY_KEY])), 'text/plain;charset=utf-8');
+    downloadTextFile('live-translate-history.txt', historyStore.historyToText(historyStore.parseHistory(r[HISTORY_KEY])), 'text/plain;charset=utf-8');
   });
   const jsonBtn = $id('exportHistoryJsonBtn');
   if (jsonBtn) jsonBtn.addEventListener('click', async () => {
     const r = await storageGet([HISTORY_KEY]);
-    downloadTextFile('live-translate-history.json', Shared.history.historyToJson(Shared.history.parseHistory(r[HISTORY_KEY])), 'application/json;charset=utf-8');
+    downloadTextFile('live-translate-history.json', historyStore.historyToJson(historyStore.parseHistory(r[HISTORY_KEY])), 'application/json;charset=utf-8');
   });
   const clearHistBtn = $id('clearHistoryBtn');
   if (clearHistBtn) clearHistBtn.addEventListener('click', async () => {

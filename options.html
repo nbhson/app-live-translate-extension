@@ -58,8 +58,8 @@
     <p class="save-status" id="saveStatus" role="status" aria-live="polite"></p>
   </main>
 
-  <!-- Shared runtime bundle (canonical utils via globalThis.LiveTranslateShared) -->
-  <script src="dist/shared.js"></script>
-  <script src="options.js" defer></script>
+  <!-- Options page entry — Vite-built ES module importing canonical src modules
+       directly (Round 3). Requires `npm run build` (dist/options.js). -->
+  <script type="module" src="dist/options.js"></script>
 </body>
 </html>
