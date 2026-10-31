@@ -1,5 +1,7 @@
 # Live Translate (EN → VI) — Chrome Side Panel Extension
 
+[![CI](https://github.com/nbhson/app-live-translate-extension/actions/workflows/ci.yml/badge.svg)](https://github.com/nbhson/app-live-translate-extension/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Real-time English speech-to-text + Vietnamese translation + AI-powered suggested answers in Chrome Side Panel. Supports **Tab Audio** (`chrome.tabCapture`) and **Microphone**; auto-translation via **Google Translate free API**; answer suggestions, 10-minute history compression and meeting summarization via **Gemini / OpenAI-compatible provider** (OpenAI, Ollama, Groq).
 
 Version **1.4.2** · MV3 · MIT · [Harness & Compression Agent](harness.md)
