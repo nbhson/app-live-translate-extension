@@ -12,13 +12,33 @@ import { isSiteDisabled } from '../utils/siteMatch.js';
 const PANEL_BEHAVIOR = { openPanelOnActionClick: false };
 const DISABLED_SITES_KEY = 'disabledSites';
 
-/** Per-site disable list (chrome.storage.local) — checked before opening. */
-async function isSiteDisabledForTab(tab) {
+/** Per-site disable list (chrome.storage.local) — checked before opening.
+ *  CRITICAL: sidePanel.open() requires a live user gesture; any `await`
+ *  (e.g. chrome.storage.local.get) before it invalidates the gesture and
+ *  the panel fails to open. So the list is cached in memory (sync read),
+ *  hydrated at worker start and kept fresh via chrome.storage.onChanged. */
+let disabledSitesCache = [];
+
+function hydrateDisabledSitesCache() {
+  chrome.storage.local.get([DISABLED_SITES_KEY])
+    .then((r) => {
+      disabledSitesCache = Array.isArray(r[DISABLED_SITES_KEY]) ? r.disabledSites : [];
+    })
+    .catch((e) => console.error('[worker] disabledSites hydrate', e));
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !(DISABLED_SITES_KEY in changes)) return;
+  const nv = changes[DISABLED_SITES_KEY].newValue;
+  disabledSitesCache = Array.isArray(nv) ? nv : [];
+});
+
+/** Synchronous check against the in-memory cache — safe to call right
+ *  before chrome.sidePanel.open() without breaking the user gesture. */
+function isSiteDisabledForTabSync(tab) {
   if (!tab || typeof tab.url !== 'string' || !tab.url) return false;
   try {
-    const r = await chrome.storage.local.get([DISABLED_SITES_KEY]);
-    const patterns = Array.isArray(r[DISABLED_SITES_KEY]) ? r.disabledSites : [];
-    return isSiteDisabled(tab.url, patterns);
+    return isSiteDisabled(tab.url, disabledSitesCache);
   } catch (e) {
     console.error('[worker] disabledSites check', e);
     return false;
@@ -46,10 +66,11 @@ function setPanelBehavior() {
     .catch((error) => console.error('[sidePanel] setPanelBehavior', error));
 }
 
-chrome.runtime.onInstalled.addListener(setPanelBehavior);
-chrome.runtime.onStartup.addListener(setPanelBehavior);
+chrome.runtime.onInstalled.addListener(() => { setPanelBehavior(); hydrateDisabledSitesCache(); });
+chrome.runtime.onStartup.addListener(() => { setPanelBehavior(); hydrateDisabledSitesCache(); });
 // Set immediately for the running worker too.
 setPanelBehavior();
+hydrateDisabledSitesCache();
 
 // Manual open on action click (primary path, NOT fallback):
 // the onClicked dispatch carries the user gesture that grants activeTab,
@@ -59,7 +80,9 @@ setPanelBehavior();
 // and breaks tab audio — do NOT switch back without a host-permission flow.
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab || typeof tab.windowId !== 'number') { console.warn('[onClicked] invalid tab', tab); return; }
-  if (await isSiteDisabledForTab(tab)) {
+  // sidePanel.open() MUST run with zero awaits before it (user gesture).
+  // The disabled-sites check is a synchronous in-memory cache lookup.
+  if (isSiteDisabledForTabSync(tab)) {
     console.info('[onClicked] suppressed: site disabled by user', tab.url);
     flashOffBadge();
     return;
@@ -72,9 +95,11 @@ chrome.action.onClicked.addListener(async (tab) => {
 chrome.commands?.onCommand.addListener(async (command) => {
   if (command !== 'toggle-panel') return;
   try {
+    // Only chrome.tabs.query runs before open (the documented pattern for
+    // onCommand); the disabled-sites check is synchronous (in-memory cache).
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!tab || typeof tab.windowId !== 'number') return;
-    if (await isSiteDisabledForTab(tab)) { flashOffBadge(); return; }
+    if (isSiteDisabledForTabSync(tab)) { flashOffBadge(); return; }
     await openPanelForWindow(tab.windowId);
   } catch (error) { console.error('[onCommand] open', error); }
 });
