@@ -63,6 +63,8 @@ flowchart TB
 - **Rolling 10-Minute Compress**: `🗜️ Compress 10m` toggle — compresses history every 10 minutes into bullet summaries; follow-up prompts use `compressed history + 10 most recent sentences`.
 - **AI Summary (full-meeting, VI/EN/JA/ZH)**: `generateSummary()` supports native Gemini (`:generateContent`) and OpenAI-compatible (`/chat/completions`); long meetings split into 12k-char chunks (map) then merged (reduce) from append-only `fullEnHistory` (5000 utterances) + `compressedSummary` — no head truncation; `Detailed/Executive/Action` modes, interactive action checklist, `.md` download.
 - **Speaker diarization heuristic**: Local VAD (RMS + spectral centroid) to distinguish 2 speakers.
+- **History Archive + Subtitle Export**: overlay `🗂️` — search EN/VI, two-step clear, export `⬇ .txt` / `⬇ .json` (re-importable) / `⬇ .srt` / `⬇ .vtt` — subtitle exports timecode transcript + bản dịch (timecodes relative to first entry, SRT `00:00:00,000` chuẩn, `src/services/export-srt.js`).
+- **One-time legacy key migration**: lúc khởi động, nếu còn `geminiApiKey` (key cũ) mà `providerApiKey` trống → copy sang `providerApiKey` rồi xóa legacy key; mọi chỗ đọc chỉ dùng `providerApiKey` sau migration (`src/services/migrate-api-key.js`).
 - **UI (1.4.0 stepper + VI default)**: Stepper `1 Ngữ cảnh → 2 Live → 3 Tổng kết`; full VI/EN interface toggle (`data-i18n`, persisted); light/dark theme (`☀️/🌙`, persisted); Help overlay color legend. Single transcript feed (newest on top, timestamps, EN+VI/EN/VI submode, `🔍` search, `❓ Chỉ hỏi` filter, wave animation, `⚙️` settings dropdown, `Xem gợi ý` CTA jumps to Answers, per-utterance TTS). Suggestion dock color zones: 🟧 question → 🟦 Gợi ý nhanh (direct first-sentence quick replies) → 🟩 complete answers with tone badges (`Tự tin/Chuyên nghiệp/Ngắn gọn`, cyclic) + talking-points chips + `Đã nói ✓` answered toggle + TTS. Memory strip always visible (`bar + % + meta + Compress/Copy`). Context tab presets (Phỏng vấn/Lớp học/Bán hàng/Đàm phán). Context Inspector `Questions` tab shows **all questions**.
 
 ---
@@ -531,14 +533,20 @@ tests/
 | `src/utils/toneBadge.js` | Tone taxonomy | `toneClass`/`assignTones` (Tự tin/Chuyên nghiệp/Ngắn gọn cyclic) |
 | `src/utils/memoryMeter.js` | Memory math | `computeMemoryMeta` (pct/level/meta, warn>50/danger>80) |
 | `src/utils/summaryLang.js` | Summary langs | `summaryLangName` (vi/en/ja/zh + fallback vi) |
+| `src/services/export-srt.js` | Transcript → SRT/WebVTT export | `buildCues`/`historyToSrt`/`historyToVtt` (timecode relative, SRT `00:00:00,000`) |
+| `src/services/migrate-api-key.js` | One-time legacy key migration | `migrateLegacyApiKey` (geminiApiKey → providerApiKey, xóa legacy, never throws) |
 | `src/ui/components/contextInspector.js` | Context Inspector | `allQuestions` (pending tab = all questions) + live/compressed |
-| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 206 tests |
-| `tests/` | Vitest suites | 206 tests (24 suites, gồm harness + compressionAgent + portedFeatures + stripSttCarryRepeat + summarySource + provider 403/Ollama hint) |
+| `src/…` (services/utils/state/ui) | Pure core, không import `chrome` trực tiếp | testable, 241 tests |
+| `tests/` | Vitest suites | 241 tests (31 suites, gồm harness + compressionAgent + portedFeatures + stripSttCarryRepeat + summarySource + provider 403/Ollama hint + export-srt + migrate-api-key) |
 | `lib/compromise.min.js` | Optional NLP for isQuestion | improves accuracy if loaded |
 | `harness.md` | Kiến trúc Harness chi tiết | Ports, Adapters, flows, checklist không-break |
 
 ## Changelog
 
+- **1.4.3 (2026-11-01)**: Transcript subtitle export + one-time legacy key migration:
+  - **Export .srt/.vtt**: History Archive thêm nút `⬇ .srt` / `⬇ .vtt` — xuất transcript + bản dịch dạng phụ đề timecoded (timecodes tính từ entry đầu tiên, SRT chuẩn `00:00:00,000`; cue EN + VI, cuối cùng ước lượng duration theo độ dài text). Logic thuần trong `src/services/export-srt.js` (`buildCues`/`historyToSrt`/`historyToVtt`), UI chỉ gọi. +8 tests.
+  - **One-time API key migration**: khởi động, `migrateLegacyApiKey` (`src/services/migrate-api-key.js`) copy `geminiApiKey` → `providerApiKey` nếu key mới trống, rồi xóa legacy key; `loadProviderConfig` không còn đọc `geminiApiKey`, save settings không còn ghi lại key legacy. Storage harness thêm passthrough `remove`. +8 tests (fake MV3 storage + callback-style harness mock).
+  - Tests 225 → 241 (31 suites).
 - **1.4.2 (2026-10-06)**: Thinking toggle + lỗi 403 thân thiện hơn:
   - Settings custom provider thêm option **Thinking ON/OFF** (ON mặc định, giữ nguyên behavior; OFF tắt reasoning/thinking cross-backend: Gemini `thinkingBudget: 0`, OpenAI-compatible `reasoning_effort: 'none'` + `reasoning/thinking/think/enable_thinking/chat_template_kwargs`; áp dụng cho suggest, generic/compress/detect, summary, cả stream). Lưu `providerThinkingEnabled` vào `chrome.storage.local`, mirror `src/` ↔ `sidepanel.js`.
   - Fix UX lỗi **403 từ Ollama local**: nguyên nhân là Ollama chặn `Origin: chrome-extension://...` → user restart Ollama với `OLLAMA_ORIGINS="chrome-extension://*"`; `friendlyProviderError()` (mới, `src/services/llm/provider.js` + mirror `sidepanel.js`) bóc error detail từ JSON/text, không leak HTML, và gắn thẳng cách fix vào message 403-local. +5 tests (provider 403/Ollama hint).

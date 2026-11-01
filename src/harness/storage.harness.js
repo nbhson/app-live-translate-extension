@@ -38,6 +38,19 @@ export function createStorageHarness({ chromeStorage } = {}) {
       } catch (e) { console.warn('[StorageHarness.set]', e); return Promise.resolve({}); }
     } : coreSet,
 
+    remove: _set ? (keys) => {
+      try {
+        const rm = chromeStorage?.remove;
+        if (typeof rm !== 'function') return Promise.resolve();
+        const p = rm(keys);
+        if (p && typeof p.then === 'function') return p.catch((e) => { console.warn('[StorageHarness.remove] async', e); });
+        return new Promise((res) => rm(keys, () => {
+          if (chrome.runtime?.lastError) console.warn('[StorageHarness.remove] lastError', chrome.runtime.lastError.message);
+          res();
+        }));
+      } catch (e) { console.warn('[StorageHarness.remove]', e); return Promise.resolve(); }
+    } : null,
+
     isValidUrl,
     isValidProviderConfig,
   };

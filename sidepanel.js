@@ -27,6 +27,8 @@ import { escapeHtml } from './src/utils/escapeHtml.js';
 import { sanitizePromptSegment, sanitizePromptContext } from './src/utils/sanitizePromptContext.js';
 import { computeSpectralCentroid } from './src/utils/computeSpectralCentroid.js';
 import * as historyStore from './src/services/history.js';
+import { migrateLegacyApiKey } from './src/services/migrate-api-key.js';
+import { historyToSrt, historyToVtt } from './src/services/export-srt.js';
 import * as sessionStore from './src/services/sessions.js';
 import * as siteMatch from './src/utils/siteMatch.js';
 
@@ -809,6 +811,7 @@ function debounce(fn, ms) { let t=null; const d=(...a)=>{ if(t) clearTimeout(t);
 /** Promise wrapper for chrome.storage — validated, lastError aware, size capped */
 function storageGet(keys) { try { const p = chrome.storage.local.get(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageGet]',e);return {};}); return new Promise((res)=> chrome.storage.local.get(keys, (r)=>{ if(chrome.runtime.lastError){console.warn('[storageGet]',chrome.runtime.lastError.message); res({});} else res(r||{});})); } catch(e){ console.warn('[storageGet]',e); return Promise.resolve({}); } }
 function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'){ const cap = k==='compressedSummary' ? COMPRESSED_SUMMARY_MAX_CHARS + 5000 : 8000; if(v.length>cap) obj[k]=v.slice(-cap); } } const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
+function storageRemove(keys) { try { const p = chrome.storage.local.remove(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageRemove]',e);}); return new Promise((res)=> chrome.storage.local.remove(keys, ()=>{ if(chrome.runtime.lastError) console.warn('[storageRemove]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageRemove]',e); return Promise.resolve(); } }
 /** Sanitize short prompt context (600 cap) — canonical impl imported directly. */
 /** Sanitize LARGE transcript segments (no 600 cap) — canonical impl imported directly. */
 const sanitizePromptSegmentSide = (s, maxChars) => sanitizePromptSegment(s, maxChars);
@@ -3566,8 +3569,7 @@ function setupSettingsOverlay() {
       providerApiKey: key,
       providerModel: model,
       providerThinkingEnabled: thinkingEnabled,
-      // keep legacy keys for compat
-      geminiApiKey: key,
+      // legacy mirrors kept for older builds reading gemini* keys
       geminiModel: model,
       geminiBaseUrl: baseUrl
     };
@@ -3614,12 +3616,16 @@ function setupSettingsOverlay() {
   });
 }
 
-// Load Provider Config from local storage (with migration from gemini keys)
+// Load Provider Config from local storage (one-time legacy geminiApiKey migration runs first)
 async function loadProviderConfig() {
+  try {
+    const m = await migrateLegacyApiKey({ get: storageGet, set: storageSet, remove: storageRemove });
+    if (m.migrated) console.info('[LiveTranslate][migration] geminiApiKey', m.copied ? 'copied to providerApiKey' : 'dropped (providerApiKey already set)');
+  } catch (e) { console.warn('[LiveTranslate][migration] geminiApiKey', e); }
   return new Promise((resolve) => {
-    chrome.storage.local.get(['providerBaseUrl','providerApiKey','providerModel','providerThinkingEnabled','geminiBaseUrl','geminiApiKey','geminiModel'], (result) => {
+    chrome.storage.local.get(['providerBaseUrl','providerApiKey','providerModel','providerThinkingEnabled','geminiBaseUrl','geminiModel'], (result) => {
       const baseUrl = result.providerBaseUrl || result.geminiBaseUrl || 'https://generativelanguage.googleapis.com/v1beta';
-      const apiKey = result.providerApiKey !== undefined ? result.providerApiKey : (result.geminiApiKey || '');
+      const apiKey = typeof result.providerApiKey === 'string' ? result.providerApiKey : '';
       const model = result.providerModel || result.geminiModel || 'gemini-2.5-flash';
       const thinkingEnabled = result.providerThinkingEnabled !== undefined ? !!result.providerThinkingEnabled : true;
       providerConfig.baseUrl = baseUrl;
@@ -4339,6 +4345,16 @@ function setupHistoryFeature() {
   if (txtBtn) txtBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.txt', historyStore.historyToText(historyEntries), 'text/plain;charset=utf-8'));
   const jsonBtn = document.getElementById('exportHistoryJsonBtn');
   if (jsonBtn) jsonBtn.addEventListener('click', () => downloadTextFile(historyExportBaseName() + '.json', historyStore.historyToJson(historyEntries), 'application/json;charset=utf-8'));
+  const srtBtn = document.getElementById('exportHistorySrtBtn');
+  if (srtBtn) srtBtn.addEventListener('click', () => {
+    if (!historyEntries.length) { showToast('No transcript to export', 'error'); return; }
+    downloadTextFile(historyExportBaseName() + '.srt', historyToSrt(historyEntries), 'text/plain;charset=utf-8');
+  });
+  const vttBtn = document.getElementById('exportHistoryVttBtn');
+  if (vttBtn) vttBtn.addEventListener('click', () => {
+    if (!historyEntries.length) { showToast('No transcript to export', 'error'); return; }
+    downloadTextFile(historyExportBaseName() + '.vtt', historyToVtt(historyEntries), 'text/vtt;charset=utf-8');
+  });
   const clearHistBtn = document.getElementById('clearHistoryBtn');
   if (clearHistBtn) clearHistBtn.addEventListener('click', async () => {
     if (!historyConfirmingClear) {
