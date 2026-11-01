@@ -465,6 +465,11 @@ host_permissions:   https://translate.googleapis.com/*, generativelanguage.googl
 optional_host:      https://*/*            (add if custom URL needed → validated via isValidUrl)
 ```
 
+> Permission `tabs` đã được bỏ (v1.4.3): mọi read `tab.url` đều là tab active ngay sau user
+> gesture (click icon / `Alt+Shift+L`) — `activeTab` đã cấp quyền đọc URL của tab đó.
+> `chrome.tabs.create` không cần permission `tabs`. Nếu `tab.url` thiếu (activeTab hết hiệu lực
+> sau navigate), worker đã xử lý graceful với message "reload the extension and click its icon".
+
 ## Development
 
 ```bash

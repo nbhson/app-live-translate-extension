@@ -75,10 +75,7 @@ const CONFIG = Object.freeze({
     providerThinkingEnabled: 'providerThinkingEnabled',
   }),
 });
-const SILENCE_THRESHOLD = CONFIG.SILENCE_THRESHOLD;
-const MAX_INTERIM_LENGTH = CONFIG.MAX_INTERIM_LENGTH;
 const MAX_DOM_UTTERANCES = CONFIG.MAX_DOM_UTTERANCES;
-const INTERIM_DEBOUNCE_MS = CONFIG.INTERIM_DEBOUNCE_MS;
 const TRANSLATION_CACHE_MAX = CONFIG.TRANSLATION_CACHE_MAX;
 const MAX_CONCURRENT_TRANSLATE = CONFIG.MAX_CONCURRENT_TRANSLATE;
 const COMPRESS_INTERVAL_MS = CONFIG.COMPRESS_INTERVAL_MS;
@@ -89,10 +86,6 @@ const FULL_HISTORY_MAX_UTTERANCES = CONFIG.FULL_HISTORY_MAX_UTTERANCES;
 const SUMMARY_CHUNK_CHARS = CONFIG.SUMMARY_CHUNK_CHARS;
 const COMPRESSED_SUMMARY_MAX_CHARS = CONFIG.COMPRESSED_SUMMARY_MAX_CHARS;
 const COMPRESS_SEGMENT_MAX_CHARS = CONFIG.COMPRESS_SEGMENT_MAX_CHARS;
-const SPEAKER_VAD_RMS_THRESH = CONFIG.SPEAKER_VAD_RMS_THRESH;
-const SPEAKER_MIN_PAUSE_MS = CONFIG.SPEAKER_MIN_PAUSE_MS;
-const SPEAKER_MIN_SPEECH_MS = CONFIG.SPEAKER_MIN_SPEECH_MS;
-const SPEAKER_CENTROID_DIFF = CONFIG.SPEAKER_CENTROID_DIFF;
 
 /** Centralized mutable state — single source, no globals scattered */
 const State = {
@@ -162,7 +155,6 @@ let compressTimer = State.compressTimer;
 let compressInProgress = State.compressInProgress;
 const translationCache = State.translationCache;
 let activeTranslateControllers = State.activeTranslateControllers;
-let suggestQueue = State.suggestQueue;
 let wordCountRaf = State.wordCountRaf;
 let currentSpeakerId = State.currentSpeakerId;
 let lastSpeakerFeatures = State.lastSpeakerFeatures;
@@ -173,8 +165,6 @@ let speakerMonitor = State.speakerMonitor;
 let speakerMonitorSource = null; // keeps the source node for disconnect on teardown
 let suggestContextPrompt = State.suggestContextPrompt;
 let contextPromptSaveTimer = State.contextPromptSaveTimer;
-let isSuggestRunning = false;
-let wordCountDirty = false;
 /** Live sub-view: 'transcript' | 'answers' | 'split' — view-only, no transcript logic depends on it.
  * 'context' is a top-level stepper tab now; setLiveView('context') routes there. */
 let liveView = 'transcript';
@@ -783,7 +773,7 @@ const openaiThinkingOffParamsSide = () => openaiThinkingOffParams();
 /** Actionable error for non-OK provider responses — canonical impl imported directly. */
 const friendlyProviderErrorSide = (status, bodyText, baseUrl) => friendlyProviderError(status, bodyText, baseUrl);
 // keep alias for backward compat in storage
-let geminiConfig = providerConfig;
+let geminiConfig = providerConfig; // eslint-disable-line no-unused-vars -- legacy alias kept in sync below
 
 // --- DOM cache with validation ---
 /** @param {string} id */
@@ -806,11 +796,11 @@ const DOM = Object.freeze({
 // Legacy aliases for untouched summary code
 const toggleBtn = DOM.toggleBtn; const playIcon = DOM.playIcon; const stopIcon = DOM.stopIcon; const btnText = DOM.btnText; const clearBtn = DOM.clearBtn; const statusText = DOM.statusText; const logoDot = DOM.logoDot; const audioSourceSelect = DOM.audioSourceSelect;
 const englishLog = DOM.englishLog; const englishInterim = DOM.englishInterim; const enPlaceholder = DOM.enPlaceholder; const vietnameseLog = DOM.vietnameseLog; const vietnameseInterim = DOM.vietnameseInterim; const viPlaceholder = DOM.viPlaceholder;
-const transcriptFeed = DOM.transcriptFeed; const combinedPlaceholder = DOM.combinedPlaceholder; const transcriptContent = DOM.transcriptContent; const combinedWordCount = DOM.combinedWordCount; const interimBlock = DOM.interimBlock; const copyAllBtn = DOM.copyAllBtn; const suggestToggle = DOM.suggestToggle; const suggestionDock = DOM.suggestionDock; const qCountBadge = DOM.qCountBadge; const questionPills = DOM.questionPills; const suggestionBody = DOM.suggestionBody; const suggestEmpty = DOM.suggestEmpty; const clearSuggestionsBtn = DOM.clearSuggestionsBtn;
+const transcriptFeed = DOM.transcriptFeed; const combinedPlaceholder = DOM.combinedPlaceholder; const transcriptContent = DOM.transcriptContent; const combinedWordCount = DOM.combinedWordCount; const interimBlock = DOM.interimBlock; const copyAllBtn = DOM.copyAllBtn; const suggestToggle = DOM.suggestToggle; const suggestionDock = DOM.suggestionDock; const qCountBadge = DOM.qCountBadge; const questionPills = DOM.questionPills; const suggestionBody = DOM.suggestionBody; const clearSuggestionsBtn = DOM.clearSuggestionsBtn;
 const copyEnBtn = DOM.copyEnBtn; const copyViBtn = DOM.copyViBtn; const permissionOverlay = DOM.permissionOverlay; const grantPermissionBtn = DOM.grantPermissionBtn; const liveBadge = DOM.liveBadge; const enWordCount = DOM.enWordCount; const viWordCount = DOM.viWordCount; const toastContainer = DOM.toastContainer;
 const tabLive = DOM.tabLive; const tabSummary = DOM.tabSummary; const tabContext = DOM.tabContext; const liveTabContent = DOM.liveTabContent; const summaryTabContent = DOM.summaryTabContent; const contextTabContent = DOM.contextTabContent;
 const settingsBtn = DOM.settingsBtn; const settingsOverlay = DOM.settingsOverlay; const closeSettingsBtn = DOM.closeSettingsBtn; const baseUrlInput = DOM.baseUrlInput; const apiKeyInput = DOM.apiKeyInput; const toggleApiKeyVisibilityBtn = DOM.toggleApiKeyVisibilityBtn; const modelInput = DOM.modelInput; const geminiModelSelect = DOM.geminiModelSelect; const thinkingToggle = DOM.thinkingToggle; const saveSettingsBtn = DOM.saveSettingsBtn;
-const apiWarningCard = DOM.apiWarningCard; const configNowBtn = DOM.configNowBtn; const summaryLangSelect = DOM.summaryLangSelect; const summaryDetailSelect = DOM.summaryDetailSelect; const generateSummaryBtn = DOM.generateSummaryBtn; const copySummaryBtn = DOM.copySummaryBtn; const summaryPlaceholder = DOM.summaryPlaceholder; const summaryMarkdown = DOM.summaryMarkdown; const summaryLoading = DOM.summaryLoading; const summaryContent = DOM.summaryContent;
+const apiWarningCard = DOM.apiWarningCard; const configNowBtn = DOM.configNowBtn; const summaryLangSelect = DOM.summaryLangSelect; const summaryDetailSelect = DOM.summaryDetailSelect; const generateSummaryBtn = DOM.generateSummaryBtn; const copySummaryBtn = DOM.copySummaryBtn; const summaryPlaceholder = DOM.summaryPlaceholder; const summaryMarkdown = DOM.summaryMarkdown; const summaryLoading = DOM.summaryLoading;
 
 // --- Pure utils (testable, no side effects) ---
 /** Escape HTML — canonical impl imported directly (mirror removed, Round 2) */
@@ -819,7 +809,6 @@ function debounce(fn, ms) { let t=null; const d=(...a)=>{ if(t) clearTimeout(t);
 /** Promise wrapper for chrome.storage — validated, lastError aware, size capped */
 function storageGet(keys) { try { const p = chrome.storage.local.get(keys); if (p && typeof p.then==='function') return p.catch(e=>{console.warn('[storageGet]',e);return {};}); return new Promise((res)=> chrome.storage.local.get(keys, (r)=>{ if(chrome.runtime.lastError){console.warn('[storageGet]',chrome.runtime.lastError.message); res({});} else res(r||{});})); } catch(e){ console.warn('[storageGet]',e); return Promise.resolve({}); } }
 function storageSet(obj) { try { if(!obj||typeof obj!=='object') return Promise.resolve(); for(const k of Object.keys(obj)){ const v=obj[k]; if(typeof v==='string'){ const cap = k==='compressedSummary' ? COMPRESSED_SUMMARY_MAX_CHARS + 5000 : 8000; if(v.length>cap) obj[k]=v.slice(-cap); } } const p = chrome.storage.local.set(obj); if (p && typeof p.then==='function') return p.catch(e=>console.warn('[storageSet]',e)); return new Promise((res)=> chrome.storage.local.set(obj, ()=>{ if(chrome.runtime.lastError) console.warn('[storageSet]',chrome.runtime.lastError.message); res();})); } catch(e){ console.warn('[storageSet]',e); return Promise.resolve(); } }
-function isValidUrl(s) { try { new URL(s); return true; } catch { return false; } }
 /** Sanitize short prompt context (600 cap) — canonical impl imported directly. */
 /** Sanitize LARGE transcript segments (no 600 cap) — canonical impl imported directly. */
 const sanitizePromptSegmentSide = (s, maxChars) => sanitizePromptSegment(s, maxChars);
@@ -1458,7 +1447,7 @@ function parseRecognitionEvent(event) {
       if (i > lastFinalIndex) {
         lastFinalIndex = i; syncState();
         const raw = String(r[0].transcript || '');
-        if (!raw.trim() || /^[\s\.\,\!\?\-]+$/.test(raw)) { finalizedOffset=0; syncState(); continue; }
+        if (!raw.trim() || /^[\s.,!?-]+$/.test(raw)) { finalizedOffset=0; syncState(); continue; }
         if (Number.isFinite(conf) && conf < 0.25) { finalizedOffset=0; syncState(); continue; }
         const remaining = raw.substring(finalizedOffset).trim();
         finalizedOffset = 0; syncState();
@@ -1536,7 +1525,6 @@ const RE_POLITE = /\b(could you maybe|would you maybe|could you kindly|would you
 const RE_TRAILING_OR = /\b(or not|or what|or something|or anything|or somewhere)\s*$/i;
 const RE_DECLARATIVE_FALSE = /^(this|that|these|those|it|we|they|he|she|you)\s+(is|are|was|were|have|has|had|will|would|can|could|should)\b/i;
 const RE_WH_SUBORDINATE = /^(who|what|when|where|why|how|which|whom|whose|whether)\s+(someone|somebody|something|somewhere|someone's|somebodys|anyone|anybody|anything|anywhere|everyone|everybody|everything|people|they|he|she|it|we|you|one|someone|something)\s+(is|are|was|were|will|would|can|could|should|have|has|had|do|does|did|be|been|being|is likely|are likely|was likely)\b/i;
-const RE_IMPERATIVE_DO = /^(do|does|did)\s+(this|that|these|those|it)\b/i;
 const RE_AUX_STRICT = /^(is|are|was|were|am|be|been|being|do|does|did|can|could|will|would|shall|should|may|might|must|have|has|had|ought|need|dare|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|can't|cannot|won't|wouldn't|shouldn't|hasn't|haven't|hadn't)\s+(you|he|she|they|we|i|it|there|one|anyone|anybody|everyone|someone|somebody|this|that|these|those)\b/i;
 
 function normalizeForQuestion(raw){
@@ -1713,8 +1701,8 @@ function buildAiDetectPromptSide(text){
 }
 function parseAiDetectResponseSide(raw){
   if(!raw||typeof raw!=='string') return []; let s=raw.trim().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/i,'').trim();
-  try{ const m=s.match(/\{[\s\S]*\}/); if(m){ const obj=JSON.parse(m[0].replace(/,\s*([}\]])/g,'$1')); if(obj&&Array.isArray(obj.questions)) return obj.questions.slice(0,4).map(q=>String(q).trim()).filter(q=>q.length>=5&&q.length<=200).map(q=>q.replace(/\s+/g,' ').trim()); if(Array.isArray(obj)) return obj.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch (_){ /* expected: lenient JSON.parse fallback */ }
-  try{ const m2=s.match(/\[[\s\S]*\]/); if(m2){ const arr=JSON.parse(m2[0].replace(/,\s*([}\]])/g,'$1')); if(Array.isArray(arr)) return arr.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch (_){ /* expected: lenient JSON.parse fallback */ }
+  try{ const m=s.match(/\{[\s\S]*\}/); if(m){ const obj=JSON.parse(m[0].replace(/,\s*([}\]])/g,'$1')); if(obj&&Array.isArray(obj.questions)) return obj.questions.slice(0,4).map(q=>String(q).trim()).filter(q=>q.length>=5&&q.length<=200).map(q=>q.replace(/\s+/g,' ').trim()); if(Array.isArray(obj)) return obj.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch { /* expected: lenient JSON.parse fallback */ }
+  try{ const m2=s.match(/\[[\s\S]*\]/); if(m2){ const arr=JSON.parse(m2[0].replace(/,\s*([}\]])/g,'$1')); if(Array.isArray(arr)) return arr.slice(0,4).map(q=>String(q).trim()).filter(Boolean);} }catch { /* expected: lenient JSON.parse fallback */ }
   return [];
 }
 function validateAiQuestionsSide(original, questions){
@@ -1743,7 +1731,6 @@ async function splitUtteranceAtSide(idx, newQs){
   if(!Array.isArray(newQs)||newQs.length<2) return false;
   const oldLen=finalizedEnPhrases.length; if(idx<0||idx>=oldLen) return false;
   // prevent infinite: if newQs combined equals old roughly and each valid
-  const oldText=finalizedEnPhrases[idx];
   // splice arrays
   const speaker=utteranceSpeakers[idx]!==undefined?utteranceSpeakers[idx]:currentSpeakerId;
   finalizedEnPhrases.splice(idx,1,...newQs);
@@ -2025,7 +2012,7 @@ function parseSuggestAnswers(raw) {
         return { structures: [], answers: arr };
       }
     }
-  } catch(_) {
+  } catch {
     try{ const {structures:ls,answers:la}=extractLenientArraysSide(noFence); let answers=la.filter(a=>!isStructureLike(a)).filter(Boolean).slice(0,5); let structures=ls.filter(s=>s.length>=3).slice(0,5); if(answers.length||structures.length) return {structures, answers}; }catch (e) { console.error('[LiveTranslate] lenient suggest-array extraction', e); }
   }
   try {
@@ -2035,7 +2022,7 @@ function parseSuggestAnswers(raw) {
       if (Array.isArray(arr)) return { structures: [], answers: arr.slice(0,5).map(s => String(s).trim()).filter(Boolean) };
     }
   } catch { /* expected: tryParse fallback */ }
-  const lines = noFence.split(/\n/).map(s => s.replace(/^[\s\-\*\d\.\u2022]+/, '').replace(/^["']|["']$/g,'').trim()).filter(s=>s.length>=3).slice(0,5);
+  const lines = noFence.split(/\n/).map(s => s.replace(/^[\s\-*\d.\u2022]+/, '').replace(/^["']|["']$/g,'').trim()).filter(s=>s.length>=3).slice(0,5);
   if (lines.length===1 && /^\{[\s\S]*\}$/.test(lines[0]) && /"structures"|"answers"/.test(lines[0])) return { structures: [], answers: [] };
   if (lines.length>0 && lines.every(l => /^\{|\["/.test(l) && /"structures"|"answers"/.test(l))) return { structures: [], answers: [] };
   // extra guard: never return a single line that IS raw JSON (image bug)
@@ -2642,7 +2629,7 @@ async function finalizeText(text) {
       if ((prevIncomplete || (prevIsWH && curIsTagFrag)) && isQuestion(combined) && combined.split(/\s+/).length <= 14) {
         // remove previous utterance (pop)
         const removedEn = finalizedEnPhrases.pop();
-        const removedVi = finalizedViPhrases.pop();
+        finalizedViPhrases.pop();
         utteranceSpeakers.pop();
         // keep the summary archive in sync: drop the archived copy so the
         // merged `combined` text (tracked below) replaces it instead of duplicating
@@ -2735,7 +2722,7 @@ async function finalizeText(text) {
   // otherwise keep currentSpeakerId; if multiple sub-utterances from same block, alternate them)
   const baseSpeaker = currentSpeakerId;
   // Push all utterances to EN
-  utterances.forEach((u, k) => {
+  utterances.forEach((u) => {
     finalizedEnPhrases.push(u);
     // if split produced multiple utterances from one final block, treat them as possibly different speakers
     // but only alternate when we already detected a speaker switch recently; otherwise keep same
@@ -2984,34 +2971,6 @@ function debouncedTranslateInterim(text) {
   }, CONFIG.INTERIM_DEBOUNCE_MS);
 }
 
-// Render finalized logs (legacy hidden) + combined single block
-function renderEnglish() {
-  if (englishLog) englishLog.innerHTML = finalizedEnPhrases.map(p => `<p>${escapeHtml(p)}</p>`).join('');
-  renderCombined();
-}
-function renderVietnamese() {
-  if (vietnameseLog) vietnameseLog.innerHTML = finalizedViPhrases.map(p => `<p>${escapeHtml(p)}</p>`).join('');
-  renderCombined();
-}
-
-function renderCombined() {
-  if (!transcriptFeed) return;
-  if (finalizedEnPhrases.length > 0 && combinedPlaceholder) combinedPlaceholder.style.display = 'none';
-
-  // Flush pending updates that were batched since last render
-  pendingRenderQueue.forEach(idx => updateUtteranceInPlace(idx));
-  pendingRenderQueue.clear();
-
-  // Append new utterances (indices not yet in DOM cache)
-  for (let i = 0; i < finalizedEnPhrases.length; i++) {
-    if (!utteranceDomCache[i]) {
-      appendUtterance(i);
-    } else if (!(utteranceDomCache[i].isLive)) {
-      updateUtteranceInPlace(i);
-    }
-  }
-}
-
 function applySpeakerToDom(cache, speakerId) {
   if (!cache || !cache.root) return;
   cache._speakerId = speakerId;
@@ -3079,7 +3038,6 @@ function reconcileQuestionDom(cache) {
 // Build the DOM for an utterance (shared by appendUtterance and live slot)
 function buildUtteranceDom(idx, en, vi) {
   const isQ = isQuestion(en);
-  const qMark = isQ ? ' <span class="question-mark">?</span>' : '';
 
   // Build the utterance DOM node
   const root = document.createElement('div');
@@ -3319,34 +3277,6 @@ function pruneOldUtterances() {
   }
 }
 
-// Update a single utterance in place (translation arrived or suggest updated)
-function updateUtteranceInPlace(idx) {
-  const cache = utteranceDomCache[idx];
-  if (!cache) return;
-  const vi = finalizedViPhrases[idx];
-  // Update VI text
-  setViText(cache.viText, vi);
-  // Update copy-vi button
-  if (vi && vi !== '…') {
-    cache.copyVi.dataset.text = vi;
-    cache.copyVi.disabled = false;
-  } else {
-    cache.copyVi.disabled = true;
-  }
-  // Keep EN text in sync with finalized phrases
-  const en = finalizedEnPhrases[idx] || '';
-  if (cache.enText && en && cache.enText.textContent !== en) {
-    cache.enText.textContent = en;
-    cache.copyEn.dataset.text = en;
-    // EN changed after build (split/merge/retry) — re-sync flag + CTA
-    reconcileQuestionDom(cache);
-  }
-  const spk = utteranceSpeakers[idx];
-  if (spk !== undefined && cache._speakerId !== spk) {
-    applySpeakerToDom(cache, spk);
-  }
-}
-
 // Update the suggest card for a given utterance index
 // Inline card is now deprecated – suggestions are shown in the separated dock (like mockup).
 // Keep function as no-op for compat but ensure dock stays in sync.
@@ -3481,7 +3411,6 @@ async function clearContent() {
   }
   abortAllPendingTranslations();
   translationCache.clear();
-  suggestQueue = Promise.resolve();
   
   if (englishLog) englishLog.innerHTML = '';
   if (englishInterim) englishInterim.innerText = '';
@@ -3702,7 +3631,7 @@ async function loadProviderConfig() {
     });
   });
 }
-async function loadGeminiConfig(){ return loadProviderConfig(); }
+async function loadGeminiConfig(){ return loadProviderConfig(); } // eslint-disable-line no-unused-vars -- kept as legacy alias
 
 // Update API Warning Card Visibility (provider based)
 function updateApiWarningState() {
@@ -3812,7 +3741,7 @@ async function generateSummary() {
     showToast('Summary generation failed', 'error');
   }
 }
-async function generateGeminiSummary(){ return generateSummary(); }
+async function generateGeminiSummary(){ return generateSummary(); } // eslint-disable-line no-unused-vars -- kept as legacy alias
 
 // Simple and Safe Client-side Markdown Parser to HTML
 function parseMarkdown(md) {
@@ -4281,7 +4210,6 @@ function updateMemoryMeter() {
     fill.classList.toggle('warn', p > 50 && p <= 80);
     fill.classList.toggle('danger', p > 80);
     pct.textContent = p + '%';
-    const qCount = Object.keys(questionSuggestions || {}).length;
   } catch { /* expected: memory meter DOM query guard */ }
 }
 
@@ -4663,7 +4591,6 @@ function initPortedFeatures() {
     setInterval(() => {
       try { if (wave) wave.hidden = !isListening; } catch (e) { console.error('[LiveTranslate] wave visibility update', e); }
     }, 800);
-    const origAppend = appendUtterance;
     // wrap via event: MutationObserver on feed to refresh count
     const feed = document.getElementById('transcriptFeed');
     if (feed && window.MutationObserver) {

@@ -13,16 +13,4 @@ export default defineConfig({
     },
     setupFiles: ['./tests/setup.js']
   },
-  build: {
-    outDir: 'dist',
-    emptyOutDir: false,
-    lib: {
-      entry: 'src/main.js',
-      formats: ['es'],
-      fileName: () => 'main.js',
-    },
-    rollupOptions: {
-      external: [],
-    },
-  },
 });

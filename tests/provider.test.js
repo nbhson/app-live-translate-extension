@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { fetchWithTimeout, fetchWithRetry, callProviderForSuggest, callProviderGeneric, isGemini, friendlyProviderError } from '../src/services/llm/provider.js';
 
 function makeResp({ status = 200, body = {}, headersMap } = {}) {

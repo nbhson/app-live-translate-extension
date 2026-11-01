@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createCompressService } from '../src/services/llm/compress.js';
 
 function fakeStore(initial = {}) {

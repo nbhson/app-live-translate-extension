@@ -12,7 +12,7 @@ import { COMPRESSED_SUMMARY_MAX_CHARS } from '../summary/summarySource.js';
 export const COMPRESS_SEGMENT_MAX_CHARS = 12000;
 
 export function createCompressService(store, deps) {
-  const { showStatus, showToast, updateCompressToggleUI, isListening, activeAudioTrack } = deps;
+  const { showStatus, showToast, updateCompressToggleUI } = deps;
   return {
     async perform(isManual = false) {
       const s0 = store.getState();

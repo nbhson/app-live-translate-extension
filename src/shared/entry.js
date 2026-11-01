@@ -12,7 +12,7 @@
  */
 import * as llm from '../services/llm/provider.js';
 import * as translateProviders from '../services/translate/providers.js';
-import { translateText as translateTextCore, abortAll as abortTranslations } from '../services/translate/translate.js';
+import { translateText as translateTextCore } from '../services/translate/translate.js';
 import { isCapturableTab } from '../background/isCapturableTab.js';
 import { isLocalHostUrl, isGeminiHostUrl } from '../utils/isLocalHostUrl.js';
 import { escapeHtml } from '../utils/escapeHtml.js';

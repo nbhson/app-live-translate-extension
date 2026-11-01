@@ -22,7 +22,7 @@ let disabledSitesCache = [];
 function hydrateDisabledSitesCache() {
   chrome.storage.local.get([DISABLED_SITES_KEY])
     .then((r) => {
-      disabledSitesCache = Array.isArray(r[DISABLED_SITES_KEY]) ? r.disabledSites : [];
+      disabledSitesCache = Array.isArray(r[DISABLED_SITES_KEY]) ? r[DISABLED_SITES_KEY] : [];
     })
     .catch((e) => console.error('[worker] disabledSites hydrate', e));
 }

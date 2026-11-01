@@ -3,7 +3,6 @@
 // ES module: imports the canonical src/utils + src/services modules directly —
 // same code as the sidepanel and service worker (no global bundle).
 
-import { escapeHtml } from './src/utils/escapeHtml.js';
 import * as siteMatch from './src/utils/siteMatch.js';
 import * as historyStore from './src/services/history.js';
 import * as sessionStore from './src/services/sessions.js';
@@ -45,8 +44,6 @@ function flashStatus(text, isError = false) {
   clearTimeout(flashStatus._t);
   flashStatus._t = setTimeout(() => { if (saveStatus) saveStatus.textContent = ''; }, 2500);
 }
-
-function escapeHtmlSafe(s) { return escapeHtml(s); }
 
 function downloadTextFile(filename, content, mime) {
   try {
@@ -172,7 +169,7 @@ async function setupThemeDefault() {
 async function init() {
   const v = $id('aboutVersion');
   try { if (v) v.textContent = `Phiên bản ${chrome.runtime.getManifest().version}`; }
-  catch (e) { if (v) v.textContent = ''; }
+  catch { if (v) v.textContent = ''; }
   setupAddSiteForm();
   setupDataActions();
   setupThemeDefault();

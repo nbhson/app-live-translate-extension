@@ -103,7 +103,6 @@ async function translateViaGoogle(trimmed, opts = {}) {
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController();
-    const signal = opts.signal || controller.signal;
     if (!opts.signal && controllers) controllers.add(controller);
     const timeoutId = setTimeout(() => controller.abort(), CONFIG.TRANSLATE_TIMEOUT_MS);
     // link external abort to inner controller when we own it

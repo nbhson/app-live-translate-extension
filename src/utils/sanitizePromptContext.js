@@ -14,6 +14,7 @@ export function sanitizePromptContext(s) {
     // break triple quotes to prevent closing the """ block
     .replace(/"""/g, '"\'"')
     // strip control chars and limit newlines
+    // eslint-disable-next-line no-control-regex -- intentionally strips control characters from prompt context
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     // collapse excessive whitespace but keep single newlines
     .replace(/[ \t]{3,}/g, ' ')
@@ -34,6 +35,7 @@ export function sanitizePromptSegment(s, maxChars = 12000) {
   if (t.length > cap) t = t.slice(-cap);
   return t
     .replace(/"""/g, '"\'"')
+    // eslint-disable-next-line no-control-regex -- intentionally strips control characters from prompt context
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     .replace(/[ \t]{3,}/g, ' ')
     .trim();

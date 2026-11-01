@@ -83,7 +83,7 @@ export function isQuestion(text, opts = {}) {
         if (qs && typeof qs.length === 'number' && qs.length > 0) return true;
       }
     }
-  } catch (_) {}
+  } catch {}
 
   // Exclamation exclusion narrower — only true exclamations not questions
   if (t.endsWith('!')) {

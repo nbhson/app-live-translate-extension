@@ -25,7 +25,7 @@ export function shouldToggleSpeaker(feats, pauseLen, lastFeatures, lastSwitchAt,
 /**
  * Stateful helper for sidepanel.js compatibility — mirrors previous global behavior
  */
-export function shouldToggleSpeakerLegacy(feats, pauseLen) {
+export function shouldToggleSpeakerLegacy(_feats, _pauseLen) {
   // This is kept for backward compat; sidepanel.js should migrate to pure version above
   // Not used in UT
   return false;

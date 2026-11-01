@@ -9,7 +9,7 @@ import { shouldToggleSpeaker as pureToggle } from '../utils/shouldToggleSpeaker.
 
 export { pureCentroid as computeSpectralCentroid };
 
-export function createAudioHarness({ store, windowApi } = {}) {
+export function createAudioHarness({ _store, windowApi } = {}) {
   const _win = windowApi ?? (typeof window !== 'undefined' ? window : globalThis);
 
   return {
@@ -19,7 +19,7 @@ export function createAudioHarness({ store, windowApi } = {}) {
       return pureToggle(feats, pauseLen, lastFeatures, lastSwitchAt, now, CONFIG.SPEAKER_CENTROID_DIFF);
     },
 
-    createMonitor(stream, callbacks = {}) {
+    createMonitor(stream, _callbacks = {}) {
       if (!stream || typeof stream.getAudioTracks !== 'function') { console.warn('[AudioHarness] invalid stream'); return null; }
       try {
         const AudioCtx = _win.AudioContext || _win.webkitAudioContext;

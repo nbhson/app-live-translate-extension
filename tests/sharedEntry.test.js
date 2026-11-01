@@ -2,11 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   llm,
   translateProviders,
-  isCapturableTab,
   isLocalHostUrl,
   isGeminiHostUrl,
   escapeHtml,
-  computeSpectralCentroid,
   sanitizePromptSegment,
   sanitizePromptContext,
 } from '../src/shared/entry.js';

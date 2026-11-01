@@ -2,8 +2,8 @@
 global.chrome = {
   storage: {
     local: {
-      get: (keys) => Promise.resolve({}),
-      set: (obj) => Promise.resolve(),
+      get: (_keys) => Promise.resolve({}),
+      set: (_obj) => Promise.resolve(),
     },
   },
   runtime: {

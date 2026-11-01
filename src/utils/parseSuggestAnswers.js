@@ -84,7 +84,7 @@ export function parseSuggestAnswers(raw) {
         return { structures: [], answers: arr };
       }
     }
-  } catch (_) {
+  } catch {
     // lenient fallback for broken JSON (unescaped newlines etc.)
     try {
       const { structures: ls, answers: la } = extractLenientArrays(noFence);
@@ -100,12 +100,12 @@ export function parseSuggestAnswers(raw) {
       const arr = tryParseJson(m[0]);
       if (Array.isArray(arr)) return { structures: [], answers: arr.slice(0, 5).map((s) => String(s).trim()).filter(Boolean) };
     }
-  } catch (_) {}
+  } catch {}
   // fallback: also support numbered "1. answer" inside object-like text
   // relaxed: keep short but meaningful lines, and always salvage something if LLM returned non-empty text
   const lines = noFence
     .split(/\n/)
-    .map((s) => s.replace(/^[\s\-\*\d\.\u2022]+/, '').replace(/^["']|["']$/g, '').trim())
+    .map((s) => s.replace(/^[\s\-*\d.\u2022]+/, '').replace(/^["']|["']$/g, '').trim())
     .filter(Boolean)
     .filter(s => s.length >= 3)
     .slice(0, 5);

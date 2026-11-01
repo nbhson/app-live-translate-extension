@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { shouldToggleSpeaker } from '../src/utils/shouldToggleSpeaker.js';
-import { CONFIG } from '../src/config.js';
 
 describe('shouldToggleSpeaker', () => {
   it('returns false if no lastFeatures', () => {

@@ -5,7 +5,6 @@ import {
   parseSessions,
   sessionToText,
   SESSIONS_MAX,
-  SESSION_PAIRS_MAX,
 } from '../src/services/sessions.js';
 
 describe('session snapshots service', () => {

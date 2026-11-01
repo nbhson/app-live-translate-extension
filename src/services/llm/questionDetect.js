@@ -50,7 +50,7 @@ export function parseDetectResponse(raw) {
         return obj.slice(0, 4).map((q) => String(q).trim()).filter(Boolean);
       }
     }
-  } catch (_) {}
+  } catch {}
   // fallback: try bare array
   try {
     const m2 = s.match(/\[[\s\S]*\]/);
@@ -58,7 +58,7 @@ export function parseDetectResponse(raw) {
       const arr = JSON.parse(m2[0].replace(/,\s*([}\]])/g, '$1'));
       if (Array.isArray(arr)) return arr.slice(0, 4).map((q) => String(q).trim()).filter(Boolean);
     }
-  } catch (_) {}
+  } catch {}
   return [];
 }
 

@@ -29,7 +29,7 @@ export function parseRecognitionEvent(event, ctx) {
         nextLastFinalIndex = i;
         const raw = String(r[0].transcript || '');
         // skip empty or only punctuation
-        if (!raw.trim() || /^[\s\.\,\!\?\-]+$/.test(raw)) { nextOffset = 0; continue; }
+        if (!raw.trim() || /^[\s.,!?-]+$/.test(raw)) { nextOffset = 0; continue; }
         if (Number.isFinite(confidence) && confidence < 0.25) { nextOffset = 0; continue; }
         const remaining = raw.substring(nextOffset).trim();
         nextOffset = 0;

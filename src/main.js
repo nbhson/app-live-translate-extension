@@ -15,7 +15,7 @@ import { escapeHtml } from './utils/escapeHtml.js';
 import { isQuestion } from './utils/isQuestion.js';
 import { splitIntoUtterances } from './utils/splitIntoUtterances.js';
 import { buildSuggestPrompt } from './utils/buildSuggestPrompt.js';
-import { parseSuggestAnswers, synthesizeStructures } from './utils/parseSuggestAnswers.js';
+import { parseSuggestAnswers } from './utils/parseSuggestAnswers.js';
 import { storageGet, storageSet } from './services/storage.js';
 import { isCapturableTab } from './background/isCapturableTab.js';
 import { createHarness } from './harness/index.js';
